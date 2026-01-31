@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: PMPL-1.0-or-later
+name = "security-headers"
+main = "security-headers.js"
+compatibility_date = "2024-01-01"
+
+# Deploy to all routes
+routes = [
+  { pattern = "wokelang.org/*", zone_name = "wokelang.org" },
+  # Add more domains here
+]

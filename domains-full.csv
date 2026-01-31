@@ -1,0 +1,2 @@
+domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,dkim_public_key,dkim_selector_rotation,dkim_public_key_rotation,bimi_logo_url,bimi_vmc_url,arc_selector,arc_public_key,spf_include,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,pages_project
+wokelang.org,hyperpolymath,wokelang,,,,,,,default,,,,,,,,,false,false,false,false,wokelang
