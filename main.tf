@@ -47,6 +47,8 @@ locals {
       enable_tunnel             = tobool(d.enable_tunnel)
       enable_ssh                = tobool(d.enable_ssh)
       enable_github_pages       = tobool(d.enable_github_pages)
+      enable_consent_gate       = tobool(try(d.enable_consent_gate, "false"))
+      enable_capability_gate    = tobool(try(d.enable_capability_gate, "false"))
       pages_project             = d.pages_project
     }
   }

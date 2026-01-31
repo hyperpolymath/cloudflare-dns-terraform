@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: PMPL-1.0-or-later
 # Security headers via Cloudflare Transform Rules
+#
+# ✅ FREE TIER - Transform Rules are FREE with unlimited requests!
+# This is more cost-effective than using Workers for headers.
 
 # Security headers ruleset for all domains
 resource "cloudflare_ruleset" "security_headers" {
   for_each = local.domains
 
   zone_id     = data.cloudflare_zones.all[each.key].zones[0].id
-  name        = "Security Headers"
-  description = "Add security headers to all responses"
+  name        = "Security Headers (FREE)"
+  description = "Add security headers to all responses - Transform Rules are FREE!"
   kind        = "zone"
   phase       = "http_response_headers_transform"
 
