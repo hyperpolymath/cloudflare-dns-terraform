@@ -10,3 +10,6 @@ terraform.tfstate.backup
 *.key
 *.pem
 secrets/
+
+# Crash recovery artifacts
+ai-cli-crash-capture/
