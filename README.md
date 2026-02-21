@@ -237,3 +237,8 @@ wokelang.org,hyperpolymath,wokelang,abc123-tunnel,mail.wokelang.org,backup.mail.
 4. **Run terraform apply** to deploy!
 
 Your entire DNS infrastructure will be code! 🚀
+
+
+## Architecture
+
+See [TOPOLOGY.md](TOPOLOGY.md) for a visual architecture map and completion dashboard.
