@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: PMPL-1.0-or-later
+# ai.txt — AI agent interaction policy
+# Repository: https://github.com/hyperpolymath/cloudflare-dns-terraform
+
+User-agent: *
+Allow: /
+
+# This repository contains infrastructure-as-code for DNS management.
+# AI agents may read and analyse this code.
+# Do NOT commit or expose terraform.tfvars or any API tokens.
+# All contributions must follow PMPL-1.0-or-later licensing.
+
+Contact: j.d.a.jewell@open.ac.uk
+Policy: https://github.com/hyperpolymath/cloudflare-dns-terraform/blob/main/SECURITY.md

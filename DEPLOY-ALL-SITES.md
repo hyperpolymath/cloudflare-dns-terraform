@@ -51,7 +51,7 @@ example.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
 | `domain` | Your domain name | e.g., `wokelang.org` |
 | `github_user` | `hyperpolymath` | Your GitHub username |
 | `github_repo` | Repo name | If using GitHub Pages |
-| `admin_email` | `jonathan.jewell@open.ac.uk` | For security contacts |
+| `admin_email` | `j.d.a.jewell@open.ac.uk` | For security contacts |
 | `enable_github_pages` | `true` or `false` | If using GitHub Pages |
 | `enable_consent_gate` | `false` | Keep false initially (FREE) |
 | `enable_capability_gate` | `false` | Keep false initially (FREE) |

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: PMPL-1.0-or-later
+# humans.txt — https://humanstxt.org/
+
+/* TEAM */
+Name: Jonathan D.A. Jewell
+Role: Lead Maintainer
+Site: https://github.com/hyperpolymath
+Contact: j.d.a.jewell [at] open.ac.uk
+Location: United Kingdom
+
+/* SITE */
+Last update: 2026-03-02
+Language: English
+Standards: Terraform, HCL, Cloudflare API
+Software: Terraform, Cloudflare Workers

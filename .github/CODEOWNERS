@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: PMPL-1.0-or-later
+# CODEOWNERS for cloudflare-dns-terraform
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @hyperpolymath
+
+# Terraform configuration
+*.tf @hyperpolymath
+
+# DNS data
+domains.csv @hyperpolymath
+domains-full.csv @hyperpolymath
+
+# Workers
+workers/ @hyperpolymath
+
+# Security-sensitive files
+SECURITY.md @hyperpolymath
+.github/workflows/ @hyperpolymath
+terraform.tfvars.example @hyperpolymath

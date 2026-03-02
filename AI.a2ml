@@ -1,15 +1,25 @@
 
-# AI Assistant Instructions
+# AI Assistant Instructions for cloudflare-dns-terraform
 
 ## Repository Focus
-- `rsr-template-repo` is treated as a Rhodium Standard Repository; obey the Rhodium policies, maintain `.bot_directives`, and keep `.machines_readable/6scm/` authoritative.
-- Prefer to keep generated files out of source control, and regenerate them with the documented commands before committing.
+- `cloudflare-dns-terraform` manages DNS records for all hyperpolymath domains via Terraform and Cloudflare.
+- The primary data source is `domains.csv` which lists all managed domains and their configuration flags.
+- Terraform files (`*.tf`) define DNS records, email security, security headers, and Cloudflare Workers.
+
+## Canonical File Locations
+- SCM files ONLY in `.machine_readable/` (never root)
+- Terraform configs at root: main.tf, variables.tf, email-security.tf, security-headers.tf, workers.tf
+- Domain data: domains.csv, domains-full.csv
+- Worker scripts: workers/*.js
+- ABI/FFI templates: src/abi/*.idr, ffi/zig/
+
+## Critical Invariants
+- NEVER commit terraform.tfvars (contains API tokens)
+- NEVER store Cloudflare API tokens in source files
+- domains.csv is the single source of truth for domain configuration
+- All DNS changes go through Terraform (no manual Cloudflare dashboard changes)
 
 ## Workflow
-1. Inspect `.machines_readable/6scm/STATE.scm` for blockers and next actions.
-2. Respect any constraints listed inside `.machines_readable/6scm/AGENTIC.scm` when tooling changes are requested.
-3. After finishing edits, update STATE with your outcomes and commit with a concise, imperative message.
-
-## Delivery Promises
-- Mention in summaries whether STATE, `contractiles/`, or `.bot_directives/` changed.
-- Keep this file in sync with the repository’s status; update it if the governance changes.
+1. Inspect `.machine_readable/STATE.scm` for blockers and next actions.
+2. After finishing edits, update STATE with outcomes.
+3. Keep this file in sync with the repository's status.

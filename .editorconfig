@@ -1,4 +1,4 @@
-# RSR-template-repo - Editor Configuration
+# cloudflare-dns-terraform - Editor Configuration
 # https://editorconfig.org
 
 root = true
@@ -66,3 +66,22 @@ indent_size = 4
 [justfile]
 indent_style = space
 indent_size = 4
+
+[*.tf]
+indent_size = 2
+
+[*.js]
+indent_size = 2
+
+[*.json]
+indent_size = 2
+
+[*.csv]
+insert_final_newline = true
+trim_trailing_whitespace = false
+
+[*.idr]
+indent_size = 2
+
+[*.sh]
+indent_size = 2

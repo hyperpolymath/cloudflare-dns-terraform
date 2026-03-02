@@ -1,6 +1,6 @@
-= RSR template repo - see RSR_OUTLINE.adoc in root for general background and specification
+= cloudflare-dns-terraform
 
-== This is your repo - don't forget to rename me!
+Infrastructure-as-code for managing DNS records across all hyperpolymath domains via Terraform and Cloudflare. See README.md for full usage documentation.
 
 == ABI/FFI Standards (Hyperpolymath Universal Standard)
 

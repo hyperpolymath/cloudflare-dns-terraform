@@ -53,7 +53,7 @@ Edit `domains.csv` (open in Excel or any spreadsheet):
 | `tunnel_id` | Cloudflare Tunnel ID | `abc123-def456` |
 | `mx_primary` | Primary mail server | `mail.wokelang.org` |
 | `mx_secondary` | Secondary mail server | `backup.mail.wokelang.org` |
-| `admin_email` | Admin email | `jonathan.jewell@open.ac.uk` |
+| `admin_email` | Admin email | `j.d.a.jewell@open.ac.uk` |
 | `ssh_fp_sha256` | SSH fingerprint (SHA256) | `sha256:ABC123...` |
 | `ssh_fp_sha256_backup` | Backup SSH fingerprint | `sha256:DEF456...` |
 | `dkim_selector` | DKIM selector | `default` |
@@ -226,7 +226,7 @@ Manually delete conflicting record in Cloudflare dashboard, then re-run `terrafo
 
 ```csv
 domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,pages_project
-wokelang.org,hyperpolymath,wokelang,abc123-tunnel,mail.wokelang.org,backup.mail.wokelang.org,jonathan.jewell@open.ac.uk,E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855,,default,d2abde240d7cd3ee6b4b28c54df034b97983a1d16e8a410e4561cb106618e971,true,true,true,false,wokelang
+wokelang.org,hyperpolymath,wokelang,abc123-tunnel,mail.wokelang.org,backup.mail.wokelang.org,j.d.a.jewell@open.ac.uk,E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855,,default,d2abde240d7cd3ee6b4b28c54df034b97983a1d16e8a410e4561cb106618e971,true,true,true,false,wokelang
 ```
 
 ## Next Steps
