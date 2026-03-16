@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: PMPL-1.0-or-later
+# Clade declaration — part of the gv-clade-index registry
+# See: https://github.com/hyperpolymath/gv-clade-index
+
+[identity]
+uuid = "65764618-4ae3-58d2-b55c-d6fb268524b9"
+primary-forge = "github"
+primary-owner = "hyperpolymath"
+canonical-name = "cloudflare-dns-terraform"
+prefixed-name = "ix-cloudflare-dns-terraform"
+
+[clade]
+primary = "ix"
+secondary = []
+assigned = "2026-03-16"
+rationale = ""
+
+[forges]
+github = "hyperpolymath/cloudflare-dns-terraform"
+gitlab = "hyperpolymath/cloudflare-dns-terraform"
+bitbucket = "hyperpolymath/cloudflare-dns-terraform"
+
+[lineage]
+type = "standalone"
+parent = "Cloudflare DNS management via Terraform"
+born = "2026-03-16"
