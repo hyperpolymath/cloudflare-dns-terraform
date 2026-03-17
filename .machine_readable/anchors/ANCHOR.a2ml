@@ -1,0 +1,18 @@
+# ⚓ ANCHOR: cloudflare-dns-terraform
+# This is the canonical authority for the cloudflare-dns-terraform repository.
+
+id: "org.hyperpolymath.cloudflare-dns-terraform"
+version: "1.0.0"
+clade: "unknown"
+status: "active"
+
+# SSG Configuration (Unified boj-server build)
+ssg:
+  engine: "casket"
+  output_dir: "public"
+  boj_trigger: true
+  cartridge: "ssg-mcp"
+
+# Relationships
+parents:
+  - "org.hyperpolymath.boj-server"
