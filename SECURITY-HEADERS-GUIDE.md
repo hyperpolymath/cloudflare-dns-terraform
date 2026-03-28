@@ -240,7 +240,7 @@ dig +short CAA wokelang.org
 
 ### Step 1: Deploy DNS Records
 ```bash
-cd /var/mnt/eclipse/repos/cloudflare-dns-terraform
+cd /var$REPOS_DIR/cloudflare-dns-terraform
 terraform init
 terraform plan
 terraform apply

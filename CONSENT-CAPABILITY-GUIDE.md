@@ -278,7 +278,7 @@ let make = () => {
 
 1. **Deploy Workers:**
 ```bash
-cd /var/mnt/eclipse/repos/cloudflare-dns-terraform/workers
+cd /var$REPOS_DIR/cloudflare-dns-terraform/workers
 wrangler deploy consent-aware-http.js
 wrangler deploy http-capability-gateway.js
 ```

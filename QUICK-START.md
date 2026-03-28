@@ -21,7 +21,7 @@ domain3.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
 ## Step 3: Deploy
 
 ```bash
-cd /var/mnt/eclipse/repos/cloudflare-dns-terraform
+cd /var$REPOS_DIR/cloudflare-dns-terraform
 
 # Set API token
 export CLOUDFLARE_API_TOKEN='bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc'
