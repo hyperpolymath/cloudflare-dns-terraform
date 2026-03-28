@@ -1,5 +1,0 @@
-= cloudflare-dns-terraform
-:toc: preamble
-:icons: font
-
-
