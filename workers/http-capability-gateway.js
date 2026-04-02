@@ -26,12 +26,21 @@ async function handleCapabilityRequest(request) {
     request.headers.get('X-Capability-Token') ||
     url.searchParams.get('capability')
 
+  const requiredCapability = determineRequiredCapability(request.method, url.pathname)
+
   if (!capabilityToken) {
-    // No token - only allow public.read
-    if (request.method !== 'GET') {
+    // Anonymous access is only valid for routes classified as public.read.
+    if (requiredCapability !== 'public.read') {
       return createCapabilityError('NoCapability',
-        'Capability token required for non-GET requests')
+        `Capability token required for ${request.method} ${url.pathname}`, {
+          required: requiredCapability
+        })
     }
+
+    return forwardRequest(request, requiredCapability, {
+      issuer: 'public-anonymous',
+      capabilities: ['public.read']
+    })
   }
 
   // 2. Verify and decode capability token
@@ -42,30 +51,34 @@ async function handleCapabilityRequest(request) {
   }
 
   // 3. Check if request matches any granted capability
-  const requiredCapability = determineRequiredCapability(request.method, url.pathname)
-
   if (!hasCapability(capabilities, requiredCapability)) {
     return createCapabilityError('InsufficientCapability',
       `Missing capability: ${requiredCapability}`, {
-      required: requiredCapability,
-      granted: capabilities
-    })
+        required: requiredCapability,
+        granted: capabilities
+      })
   }
 
-  // 4. Capability verified - add to request headers
-  const modifiedRequest = new Request(request)
-  modifiedRequest.headers.set('X-Verified-Capability', requiredCapability)
-  modifiedRequest.headers.set('X-Capability-Granted-By', capabilities.issuer || 'unknown')
+  return forwardRequest(request, requiredCapability, capabilities)
+}
 
-  // 5. Forward to origin
+async function forwardRequest(request, requiredCapability, capabilities) {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('X-Verified-Capability', requiredCapability)
+  requestHeaders.set('X-Capability-Granted-By', capabilities.issuer || 'unknown')
+
+  const modifiedRequest = new Request(request, { headers: requestHeaders })
   const response = await fetch(modifiedRequest)
 
-  // 6. Add capability audit trail to response
-  const modifiedResponse = new Response(response.body, response)
-  modifiedResponse.headers.set('X-Capability-Used', requiredCapability)
-  modifiedResponse.headers.set('X-Capability-Gateway', 'enforced')
+  const responseHeaders = new Headers(response.headers)
+  responseHeaders.set('X-Capability-Used', requiredCapability)
+  responseHeaders.set('X-Capability-Gateway', 'enforced')
 
-  return modifiedResponse
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders
+  })
 }
 
 function determineRequiredCapability(method, pathname) {

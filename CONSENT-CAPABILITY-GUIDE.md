@@ -2,22 +2,22 @@
 
 ## Overview
 
-Both `consent-aware-http` and `http-capability-gateway` are **absolutely realistic** and can be deployed to your sites via Cloudflare Workers.
+Both `consent-aware-http` and `http-capability-gateway` are realistic Cloudflare Worker prefilters, but for the NUJ WordPress/Verpex sites they should be treated as optional edge helpers rather than the only enforcement point. The canonical decision should live at origin (Varnish/OpenLiteSpeed/WordPress MU-plugin), with Cloudflare rejecting obvious failures earlier when that extra layer is worth the request budget.
 
 ## Architecture
 
 ```
 User Request
     ↓
-Cloudflare Edge
+Cloudflare DNS/TLS/WAF
     ↓
-[Consent Gate] ← Checks user consent cookie
-    ↓ (if consent granted)
-[Capability Gate] ← Verifies capability token
-    ↓ (if capability valid)
-Origin Server (GitHub Pages / Cloudflare Pages)
+[Optional consent/capability Worker prefilters]
     ↓
-Response (with audit headers)
+Varnish / OpenLiteSpeed fast-fail rules
+    ↓
+WordPress MU-plugin origin governance (canonical)
+    ↓
+Response (with audit headers and policy links)
 ```
 
 ---
@@ -29,6 +29,8 @@ Response (with audit headers)
 - Returns 403 with required consent levels if not granted
 - Enforces GDPR/privacy compliance at HTTP layer
 - Integrates with WokeLang's `only if okay` philosophy
+
+For the NUJ sites, use this at the edge only if the origin already enforces the same policy.
 
 ### Use Cases:
 ```javascript
@@ -111,6 +113,8 @@ wrangler route add wokelang.org/* consent-gate
 - Implements WokeLang's capability model for web APIs
 - Supports fine-grained access control
 
+For the NUJ sites, this should mirror the origin capability gate rather than replace it.
+
 ### Use Cases:
 
 ```javascript
@@ -186,7 +190,7 @@ wrangler route add wokelang.org/api/* capability-gate
 
 ## 3. Combined Deployment (Consent + Capability)
 
-You can **chain both workers** for maximum security:
+You can chain both workers for early rejection, but keep the origin as the source of truth:
 
 ```
 Request

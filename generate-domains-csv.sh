@@ -7,7 +7,7 @@ set -e
 
 if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
     echo "Error: Set CLOUDFLARE_API_TOKEN environment variable"
-    echo "export CLOUDFLARE_API_TOKEN='bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc'"
+    echo "export CLOUDFLARE_API_TOKEN='your-api-token-here'"
     exit 1
 fi
 
@@ -43,12 +43,12 @@ CSV_FILE="domains.csv"
 echo "Writing to $CSV_FILE..."
 
 cat > "$CSV_FILE" << 'EOF'
-domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,pages_project
+domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,enable_ipfs_gateway,ipfs_dnslink,pages_project
 EOF
 
 # Add each domain with defaults
 while IFS= read -r domain; do
-    echo "${domain},hyperpolymath,,,,,,,,default,,false,false,false,false,false,false," >> "$CSV_FILE"
+    echo "${domain},hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,false,," >> "$CSV_FILE"
     echo "  ✓ Added: $domain"
 done <<< "$DOMAINS"
 

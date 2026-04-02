@@ -49,6 +49,8 @@ locals {
       enable_github_pages       = tobool(d.enable_github_pages)
       enable_consent_gate       = tobool(try(d.enable_consent_gate, "false"))
       enable_capability_gate    = tobool(try(d.enable_capability_gate, "false"))
+      enable_ipfs_gateway       = tobool(try(d.enable_ipfs_gateway, "false"))
+      ipfs_dnslink              = try(d.ipfs_dnslink, "")
       pages_project             = d.pages_project
     }
   }
@@ -59,6 +61,25 @@ data "cloudflare_zones" "all" {
   for_each = local.domains
   filter {
     name = each.value.domain
+  }
+}
+
+# ============================================================================
+# WEB3 / IPFS GATEWAYS
+# ============================================================================
+
+resource "cloudflare_web3_hostname" "ipfs" {
+  for_each = { for k, v in local.domains : k => v if v.enable_ipfs_gateway }
+
+  zone_id     = data.cloudflare_zones.all[each.key].zones[0].id
+  name        = "ipfs.${each.value.domain}"
+  target      = "ipfs"
+  description = "IPFS DNSLink gateway for ${each.value.domain}"
+  dnslink     = each.value.ipfs_dnslink != "" ? each.value.ipfs_dnslink : "/ipns/onboarding.ipfs.cloudflare.com"
+
+  lifecycle {
+    # The site publish scripts update dnslink after each successful IPFS publish.
+    ignore_changes = [dnslink]
   }
 }
 
@@ -362,6 +383,28 @@ resource "cloudflare_record" "zulip" {
   comment = "Zulip chat"
 }
 
+resource "cloudflare_record" "chat" {
+  for_each = local.domains
+
+  zone_id = data.cloudflare_zones.all[each.key].zones[0].id
+  name    = "chat"
+  content = each.value.domain
+  type    = "CNAME"
+  proxied = true
+  comment = "Chat service hostname"
+}
+
+resource "cloudflare_record" "conference" {
+  for_each = local.domains
+
+  zone_id = data.cloudflare_zones.all[each.key].zones[0].id
+  name    = "conference"
+  content = each.value.domain
+  type    = "CNAME"
+  proxied = true
+  comment = "Conference service hostname"
+}
+
 resource "cloudflare_record" "members" {
   for_each = local.domains
 
@@ -371,6 +414,28 @@ resource "cloudflare_record" "members" {
   type    = "CNAME"
   proxied = true
   comment = "Members area"
+}
+
+resource "cloudflare_record" "stfp" {
+  for_each = local.domains
+
+  zone_id = data.cloudflare_zones.all[each.key].zones[0].id
+  name    = "stfp"
+  content = each.value.domain
+  type    = "CNAME"
+  proxied = true
+  comment = "Secure file transfer hostname"
+}
+
+resource "cloudflare_record" "office" {
+  for_each = local.domains
+
+  zone_id = data.cloudflare_zones.all[each.key].zones[0].id
+  name    = "office"
+  content = each.value.domain
+  type    = "CNAME"
+  proxied = true
+  comment = "Office collaboration hostname"
 }
 
 # ============================================================================

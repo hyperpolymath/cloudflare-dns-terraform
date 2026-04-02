@@ -9,10 +9,10 @@ Go to https://dash.cloudflare.com and copy all 26 domain names.
 Open `domains.csv` in Excel and add one row per domain:
 
 ```csv
-domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,pages_project
-wokelang.org,hyperpolymath,wokelang,,,,,,,default,,false,false,false,false,false,false,wokelang
-domain2.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
-domain3.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
+domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,enable_ipfs_gateway,ipfs_dnslink,pages_project
+wokelang.org,hyperpolymath,wokelang,,,,,,,default,,false,false,false,false,false,false,false,,wokelang
+domain2.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,false,,
+domain3.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,false,,
 ... (add all 26 domains)
 ```
 
@@ -24,7 +24,7 @@ domain3.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
 cd /var$REPOS_DIR/cloudflare-dns-terraform
 
 # Set API token
-export CLOUDFLARE_API_TOKEN='bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc'
+export CLOUDFLARE_API_TOKEN='your-api-token-here'
 
 # Deploy
 terraform init
@@ -36,4 +36,4 @@ terraform apply   # Deploy!
 
 All 26 domains will use Transform Rules (FREE unlimited) for security headers.
 
-No workers = No cost! 🎉
+DNS-only records are still free. Cloudflare Web3/IPFS hostnames require a subscribed Web3 gateway product.

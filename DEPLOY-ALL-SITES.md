@@ -5,8 +5,9 @@
 This will:
 - ✅ Add security headers to ALL domains (FREE)
 - ✅ Standardize DNS records across ALL domains
-- ✅ Optionally add consent/capability gates
-- ✅ Zero cost (uses FREE Transform Rules)
+- ✅ Optionally add Cloudflare consent/capability prefilters
+- ✅ Keep the DNS-only baseline at zero cost (Transform Rules remain FREE)
+- ✅ Optionally add Cloudflare Web3/IPFS hostnames where direct IPFS access is needed
 
 ---
 
@@ -19,7 +20,7 @@ This will:
 
 ### Option B: Via API
 ```bash
-export CLOUDFLARE_API_TOKEN='bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc'
+export CLOUDFLARE_API_TOKEN='your-api-token-here'
 
 curl -s "https://api.cloudflare.com/client/v4/zones?per_page=100" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | \
@@ -40,8 +41,8 @@ Open `domains.csv` in Excel or any spreadsheet app.
 ### Quick Template (copy this for each domain):
 
 ```csv
-domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,pages_project
-example.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
+domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,enable_ipfs_gateway,ipfs_dnslink,pages_project
+example.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,false,,
 ```
 
 ### Fill in these columns:
@@ -53,8 +54,10 @@ example.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
 | `github_repo` | Repo name | If using GitHub Pages |
 | `admin_email` | `j.d.a.jewell@open.ac.uk` | For security contacts |
 | `enable_github_pages` | `true` or `false` | If using GitHub Pages |
-| `enable_consent_gate` | `false` | Keep false initially (FREE) |
-| `enable_capability_gate` | `false` | Keep false initially (FREE) |
+| `enable_consent_gate` | `false` | Optional edge prefilter; keep origin enforcement as source of truth |
+| `enable_capability_gate` | `false` | Optional `/api/*` prefilter; keep origin enforcement as source of truth |
+| `enable_ipfs_gateway` | `false` | Requires Cloudflare Web3 gateway subscription |
+| `ipfs_dnslink` | `/ipns/onboarding.ipfs.cloudflare.com` | Initial value before your publish script updates it |
 | `pages_project` | Project name | If using Cloudflare Pages |
 
 ### Leave blank:
@@ -71,7 +74,7 @@ example.com,hyperpolymath,,,,,,,,default,,false,false,false,false,false,false,
 cd /var$REPOS_DIR/cloudflare-dns-terraform
 
 # Set credentials
-export CLOUDFLARE_API_TOKEN='bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc'
+export CLOUDFLARE_API_TOKEN='your-api-token-here'
 
 # Or use terraform.tfvars
 cp terraform.tfvars.example terraform.tfvars

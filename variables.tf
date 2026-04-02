@@ -10,5 +10,4 @@ variable "cloudflare_api_token" {
 variable "cloudflare_account_id" {
   description = "Cloudflare account ID"
   type        = string
-  default     = "b72dd54ed3ee66088950c82e0301edbb"
 }

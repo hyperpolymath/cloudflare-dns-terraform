@@ -10,6 +10,8 @@ Infrastructure-as-code for managing DNS records across all hyperpolymath domains
 - ✅ **Preview before apply** (see exactly what will change)
 - ✅ **Bulk updates** (change all domains at once)
 - ✅ **Domain-specific customization** (keys, tunnel IDs, etc.)
+- ✅ **Optional Web3/IPFS gateway hostnames** for direct `https://ipfs.<domain>/` access
+- ✅ **Optional edge consent/capability prefilters** when the origin already enforces the canonical policy
 
 ## Quick Start
 
@@ -37,8 +39,8 @@ nano terraform.tfvars
 
 **terraform.tfvars:**
 ```hcl
-cloudflare_api_token  = "bEy8xJ8vDmHLh0wMcC52Z7Pyw42bQDasPiW7fQzc"
-cloudflare_account_id = "b72dd54ed3ee66088950c82e0301edbb"
+cloudflare_api_token  = "your-api-token-here"
+cloudflare_account_id = "your-account-id-here"
 ```
 
 ### 3. Add Your Domains
@@ -62,6 +64,8 @@ Edit `domains.csv` (open in Excel or any spreadsheet):
 | `enable_tunnel` | Enable Cloudflare Tunnel | `true`/`false` |
 | `enable_ssh` | Enable SSHFP records | `true`/`false` |
 | `enable_github_pages` | Enable GitHub Pages CNAME | `true`/`false` |
+| `enable_ipfs_gateway` | Enable Cloudflare Web3 IPFS hostname | `true`/`false` |
+| `ipfs_dnslink` | Initial DNSLink for Web3 hostname | `/ipns/onboarding.ipfs.cloudflare.com` |
 | `pages_project` | Cloudflare Pages project name | `wokelang` |
 
 ### 4. Deploy
@@ -86,7 +90,11 @@ terraform apply
 - `cdn` → CNAME to root (proxied)
 - `discourse` → CNAME to root (for forums)
 - `zulip` → CNAME to root (for chat)
+- `chat` → CNAME to root (service hostname used by the NUJ site repos)
+- `conference` → CNAME to root
 - `members` → CNAME to root (members area)
+- `stfp` → CNAME to root (secure file transfer)
+- `office` → CNAME to root (office collaboration)
 - `ci` → CNAME to root (CI/CD status)
 - `status` → CNAME to root (status page)
 - `logs` → CNAME to root (logs)
@@ -102,6 +110,7 @@ terraform apply
 ### Conditional (based on CSV flags):
 - **GitHub Pages:** `gh-pages` CNAME (if `enable_github_pages=true`)
 - **Cloudflare Pages:** Custom domain setup (if `pages_project` set)
+- **Web3/IPFS:** `ipfs.<domain>` hostname managed by Cloudflare Web3 (if `enable_ipfs_gateway=true`; requires a Web3 gateway subscription)
 - **Mail:** MX, MTA-STS, TLS-RPT (if `enable_mail=true`)
 - **SSH:** SSHFP records (if `enable_ssh=true`)
 - **Tunnel:** `*.internal` CNAMEs (if `enable_tunnel=true`)
@@ -150,6 +159,11 @@ terraform apply
 ```
 
 Terraform will only create records for the new domain, leaving existing ones untouched!
+
+For IPFS hostnames, Terraform creates the Web3 hostname object and bootstraps its
+initial `dnslink` value. The website publish scripts then update that `dnslink`
+after each publish, so the Terraform resource intentionally ignores later
+`dnslink` drift.
 
 ## Updating Existing Domains
 
@@ -210,6 +224,7 @@ API token needs these permissions:
 - **Zone:DNS:Edit**
 - **Account:Cloudflare Pages:Edit**
 - **Zone:Read**
+- **Web3 Hostnames Write** (if using IPFS Web3 hostnames)
 
 ### "Record already exists"
 Manually delete conflicting record in Cloudflare dashboard, then re-run `terraform apply`.
@@ -225,8 +240,8 @@ Manually delete conflicting record in Cloudflare dashboard, then re-run `terrafo
 ## Example: Full wokelang.org Entry
 
 ```csv
-domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,pages_project
-wokelang.org,hyperpolymath,wokelang,abc123-tunnel,mail.wokelang.org,backup.mail.wokelang.org,j.d.a.jewell@open.ac.uk,E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855,,default,d2abde240d7cd3ee6b4b28c54df034b97983a1d16e8a410e4561cb106618e971,true,true,true,false,wokelang
+domain,github_user,github_repo,tunnel_id,mx_primary,mx_secondary,admin_email,ssh_fp_sha256,ssh_fp_sha256_backup,dkim_selector,tlsa_cert_hash,enable_mail,enable_tunnel,enable_ssh,enable_github_pages,enable_consent_gate,enable_capability_gate,enable_ipfs_gateway,ipfs_dnslink,pages_project
+wokelang.org,hyperpolymath,wokelang,abc123-tunnel,mail.wokelang.org,backup.mail.wokelang.org,admin@example.org,E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855,,default,d2abde240d7cd3ee6b4b28c54df034b97983a1d16e8a410e4561cb106618e971,true,true,true,false,false,false,false,,wokelang
 ```
 
 ## Next Steps
