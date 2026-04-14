@@ -2,6 +2,8 @@
 # Justfile for cloudflare-dns-terraform
 
 # Default recipe — list available commands
+import? "contractile.just"
+
 default:
     @just --list
 
