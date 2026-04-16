@@ -1,5 +1,5 @@
 ||| SPDX-License-Identifier: PMPL-1.0-or-later
-||| Foreign Function Interface Declarations
+||| Foreign Function Interface Declarations for CLOUDFLARE_DNS_TERRAFORM
 |||
 ||| This module declares all C-compatible functions that will be
 ||| implemented in the Zig FFI layer.
