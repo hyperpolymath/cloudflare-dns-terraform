@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PMPL-1.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 = cloudflare-dns-terraform - Citation Guide
 :toc:
 
@@ -11,7 +11,7 @@
   title = {cloudflare-dns-terraform},
   year = {2025},
   url = {https://github.com/hyperpolymath/cloudflare-dns-terraform},
-  license = {PMPL-1.0-or-later}
+  license = {MPL-2.0}
 }
 ----
 

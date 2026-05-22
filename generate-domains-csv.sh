@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: PMPL-1.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 # Generate domains.csv from all Cloudflare zones in your account
 # This will replace existing domains.csv with ALL your domains
 

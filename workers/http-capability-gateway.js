@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PMPL-1.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 // HTTP Capability Gateway
 // Capability-based security for HTTP requests
 // Inspired by WokeLang's capability system

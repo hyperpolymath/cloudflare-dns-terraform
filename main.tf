@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: PMPL-1.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 # Cloudflare DNS Management via Terraform
 # Manages DNS records for all hyperpolymath domains
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: PMPL-1.0-or-later
+# SPDX-License-Identifier: MPL-2.0
 # Copy this to terraform.tfvars and fill in your values
 
 cloudflare_api_token   = "your-api-token-here"
