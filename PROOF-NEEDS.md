@@ -1,0 +1,14 @@
+<!--
+SPDX-License-Identifier: CC-BY-SA-4.0
+SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+-->
+# Proof needs
+
+Template ABI stubs (`src/abi/{Types,Foreign,Layout}.idr`) removed 2026-06-29 —
+they were RSR-template placeholders ("Replace CloudflareDnsTerraform with your
+project name"), not real proofs, and created a false impression of formal
+verification in what is a Cloudflare DNS / Terraform configuration repo.
+
+This repo makes **no formal-verification claim**. There are currently no proof
+obligations. If formal guarantees are ever wanted (e.g. DNS-record invariants,
+zone-file well-formedness), add them deliberately under `verification/proofs/`.
