@@ -13,8 +13,7 @@ echo "🔍 Checking for new domains in Cloudflare..."
 
 # Get all zones from Cloudflare
 CF_DOMAINS=$(curl -s -X GET 'https://api.cloudflare.com/client/v4/zones?per_page=100' \
-  -H "X-Auth-Email: paraordinate@yahoo.co.uk" \
-  -H "X-Auth-Key: 7a515ea1cffbff120f66cd08e6d3e41f02415" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
   -H 'Content-Type: application/json' | \
   python3 -c "import sys,json; [print(z['name']) for z in json.load(sys.stdin)['result']]" 2>/dev/null || echo "")
 
