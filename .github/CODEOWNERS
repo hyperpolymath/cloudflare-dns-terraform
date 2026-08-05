@@ -1,21 +1,4 @@
 # SPDX-License-Identifier: MPL-2.0
-# CODEOWNERS for cloudflare-dns-terraform
-# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-
-# Default owner for everything
-* @hyperpolymath
-
-# Terraform configuration
-*.tf @hyperpolymath
-
-# DNS data
-domains.csv @hyperpolymath
-domains-full.csv @hyperpolymath
-
-# Workers
-workers/ @hyperpolymath
-
-# Security-sensitive files
-SECURITY.md @hyperpolymath
-.github/workflows/ @hyperpolymath
-terraform.tfvars.example @hyperpolymath
+# Solo-maintained hyperpolymath repo: no owner lines by policy.
+# See hyperpolymath/standards CODEOWNERS-POLICY.adoc (Rule 1).
+# Sole-maintainer review is moot; SPDX headers carry attribution.
