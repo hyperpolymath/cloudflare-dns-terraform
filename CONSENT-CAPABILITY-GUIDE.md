@@ -247,8 +247,8 @@ to handleRequest(request: HttpRequest) {
 }
 ```
 
-### Frontend (ReScript):
-```rescript
+### Frontend (AffineScript):
+```affinescript
 // consent-ui.res
 @react.component
 let make = () => {
