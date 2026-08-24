@@ -1,12 +1,18 @@
-# Consent-Aware HTTP & Capability Gateway Implementation Guide
+== Consent-Aware HTTP & Capability Gateway Implementation Guide
 
-## Overview
+=== Overview
 
-Both `consent-aware-http` and `http-capability-gateway` are realistic Cloudflare Worker prefilters, but for the NUJ WordPress/Verpex sites they should be treated as optional edge helpers rather than the only enforcement point. The canonical decision should live at origin (Varnish/OpenLiteSpeed/WordPress MU-plugin), with Cloudflare rejecting obvious failures earlier when that extra layer is worth the request budget.
+Both `+consent-aware-http+` and `+http-capability-gateway+` are
+realistic Cloudflare Worker prefilters, but for the NUJ WordPress/Verpex
+sites they should be treated as optional edge helpers rather than the
+only enforcement point. The canonical decision should live at origin
+(Varnish/OpenLiteSpeed/WordPress MU-plugin), with Cloudflare rejecting
+obvious failures earlier when that extra layer is worth the request
+budget.
 
-## Architecture
+=== Architecture
 
-```
+....
 User Request
     ↓
 Cloudflare DNS/TLS/WAF
@@ -18,22 +24,26 @@ Varnish / OpenLiteSpeed fast-fail rules
 WordPress MU-plugin origin governance (canonical)
     ↓
 Response (with audit headers and policy links)
-```
+....
 
----
+'''''
 
-## 1. Consent-Aware HTTP
+=== 1. Consent-Aware HTTP
 
-### What It Does:
-- Blocks requests to resources that require specific consent
-- Returns 403 with required consent levels if not granted
-- Enforces GDPR/privacy compliance at HTTP layer
-- Integrates with WokeLang's `only if okay` philosophy
+==== What It Does:
 
-For the NUJ sites, use this at the edge only if the origin already enforces the same policy.
+* Blocks requests to resources that require specific consent
+* Returns 403 with required consent levels if not granted
+* Enforces GDPR/privacy compliance at HTTP layer
+* Integrates with WokeLang’s `+only if okay+` philosophy
 
-### Use Cases:
-```javascript
+For the NUJ sites, use this at the edge only if the origin already
+enforces the same policy.
+
+==== Use Cases:
+
+[source,javascript]
+----
 // Analytics API - requires analytics consent
 GET /api/analytics/track
 → 403 if user hasn't consented to analytics
@@ -45,12 +55,14 @@ GET /api/personalize/recommendations
 // Essential resources - always allowed
 GET /api/content
 → 200 (essential, no consent needed)
-```
+----
 
-### Setting User Consent:
+==== Setting User Consent:
 
-**Frontend JavaScript:**
-```javascript
+*Frontend JavaScript:*
+
+[source,javascript]
+----
 // User accepts consent via UI
 function setConsent(levels) {
   const consent = {
@@ -67,10 +79,12 @@ function setConsent(levels) {
   // Refresh page to apply new consent
   location.reload();
 }
-```
+----
 
-**Consent UI Example:**
-```html
+*Consent UI Example:*
+
+[source,html]
+----
 <div class="consent-banner">
   <h3>Cookie Consent</h3>
   <p>Choose what data you're comfortable sharing:</p>
@@ -93,31 +107,35 @@ function setConsent(levels) {
 
   <button onclick="saveConsent()">Save Preferences</button>
 </div>
-```
+----
 
-### Deployment:
+==== Deployment:
 
-```bash
+[source,bash]
+----
 cd workers/
 wrangler deploy consent-aware-http.js --name consent-gate
 wrangler route add wokelang.org/* consent-gate
-```
+----
 
----
+'''''
 
-## 2. HTTP Capability Gateway
+=== 2. HTTP Capability Gateway
 
-### What It Does:
-- Enforces capability-based security at HTTP layer
-- Prevents privilege escalation attacks
-- Implements WokeLang's capability model for web APIs
-- Supports fine-grained access control
+==== What It Does:
 
-For the NUJ sites, this should mirror the origin capability gate rather than replace it.
+* Enforces capability-based security at HTTP layer
+* Prevents privilege escalation attacks
+* Implements WokeLang’s capability model for web APIs
+* Supports fine-grained access control
 
-### Use Cases:
+For the NUJ sites, this should mirror the origin capability gate rather
+than replace it.
 
-```javascript
+==== Use Cases:
+
+[source,javascript]
+----
 // Generate capability token (backend)
 const token = generateCapability({
   capabilities: ['file.read', 'user.read'],
@@ -140,11 +158,12 @@ fetch('/api/files/document.pdf', {
   }
 })
 → 403 (missing file.delete capability)
-```
+----
 
-### Capability Token Format:
+==== Capability Token Format:
 
-```json
+[source,json]
+----
 {
   "capabilities": ["file.read", "user.read"],
   "iat": 1706745600,
@@ -152,12 +171,14 @@ fetch('/api/files/document.pdf', {
   "issuer": "wokelang-gateway",
   "subject": "user-123"
 }
-```
+----
 
-### Backend Integration:
+==== Backend Integration:
 
-**Generate capability token (Node.js/Deno):**
-```javascript
+*Generate capability token (Node.js/Deno):*
+
+[source,javascript]
+----
 import jwt from 'jsonwebtoken';
 
 function generateCapabilityToken(userId, capabilities, expiresIn = '1h') {
@@ -177,22 +198,24 @@ const token = generateCapabilityToken('user-123', [
   'file.write',
   'user.read'
 ]);
-```
+----
 
-### Deployment:
+==== Deployment:
 
-```bash
+[source,bash]
+----
 wrangler deploy http-capability-gateway.js --name capability-gate
 wrangler route add wokelang.org/api/* capability-gate
-```
+----
 
----
+'''''
 
-## 3. Combined Deployment (Consent + Capability)
+=== 3. Combined Deployment (Consent + Capability)
 
-You can chain both workers for early rejection, but keep the origin as the source of truth:
+You can chain both workers for early rejection, but keep the origin as
+the source of truth:
 
-```
+....
 Request
   ↓
 1. Consent Gate (checks consent cookie)
@@ -200,11 +223,12 @@ Request
 2. Capability Gate (checks capability token)
   ↓
 Origin
-```
+....
 
-**Terraform Configuration:**
+*Terraform Configuration:*
 
-```hcl
+[source,hcl]
+----
 # In main.tf
 resource "cloudflare_worker_route" "consent_gate" {
   for_each = local.domains
@@ -221,16 +245,18 @@ resource "cloudflare_worker_route" "capability_gate" {
   pattern     = "${each.value.domain}/api/*"
   script_name = "http-capability-gateway"
 }
-```
+----
 
----
+'''''
 
-## 4. Integration with WokeLang
+=== 4. Integration with WokeLang
 
-These workers are **perfect** for WokeLang-powered sites:
+These workers are *perfect* for WokeLang-powered sites:
 
-### WokeLang Backend:
-```woke
+==== WokeLang Backend:
+
+[source,woke]
+----
 // WokeLang API endpoint
 to handleRequest(request: HttpRequest) {
   // Capability already verified by gateway
@@ -245,10 +271,12 @@ to handleRequest(request: HttpRequest) {
     return error("Capability required")
   }
 }
-```
+----
 
-### Frontend (ReScript):
-```rescript
+==== Frontend (AffineScript):
+
+[source,affinescript]
+----
 // consent-ui.res
 @react.component
 let make = () => {
@@ -272,38 +300,48 @@ let make = () => {
 
   <ConsentBanner onSave={saveConsent} />
 }
-```
+----
 
----
+'''''
 
-## 5. Real-World Example: wokelang.org
+=== 5. Real-World Example: wokelang.org
 
-### Setup:
+==== Setup:
 
-1. **Deploy Workers:**
-```bash
+[arabic]
+. *Deploy Workers:*
+
+[source,bash]
+----
 cd /var$REPOS_DIR/cloudflare-dns-terraform/workers
 wrangler deploy consent-aware-http.js
 wrangler deploy http-capability-gateway.js
-```
+----
 
-2. **Configure Routes:**
-```bash
+[arabic, start=2]
+. *Configure Routes:*
+
+[source,bash]
+----
 # Consent gate on all pages
 wrangler route add "wokelang.org/*" consent-aware-http
 
 # Capability gate on APIs
 wrangler route add "wokelang.org/api/*" http-capability-gateway
-```
+----
 
-3. **Update Terraform:**
-```bash
+[arabic, start=3]
+. *Update Terraform:*
+
+[source,bash]
+----
 terraform apply  # Adds routes automatically
-```
+----
 
-### Testing:
+==== Testing:
 
-```bash
+[source,bash]
+----
 # Test consent gate
 curl -I https://wokelang.org/api/analytics
 # → 403 Consent Required (if no consent cookie)
@@ -320,15 +358,16 @@ curl https://wokelang.org/api/files/test.txt
 curl -H "X-Capability-Token: eyJ..." \
   https://wokelang.org/api/files/test.txt
 # → 200 OK (if token has file.read)
-```
+----
 
----
+'''''
 
-## 6. Advanced Features
+=== 6. Advanced Features
 
-### A. Capability Delegation
+==== A. Capability Delegation
 
-```javascript
+[source,javascript]
+----
 // Parent capability can create child capabilities
 const parentToken = generateCapability({
   capabilities: ['file.read', 'file.write'],
@@ -340,22 +379,24 @@ const childToken = delegateCapability(parentToken, {
   capabilities: ['file.read'],  // Subset only
   expiresIn: 600  // Shorter lifetime
 });
-```
+----
 
-### B. Consent Granularity
+==== B. Consent Granularity
 
-```javascript
+[source,javascript]
+----
 // Per-resource consent
 const RESOURCE_CONSENT = {
   '/api/analytics/pageviews': ['analytics'],
   '/api/analytics/heatmaps': ['analytics', 'functional'],
   '/api/ads/targeting': ['marketing', 'personalization'],
 }
-```
+----
 
-### C. Audit Logging
+==== C. Audit Logging
 
-```javascript
+[source,javascript]
+----
 // Log all capability usage
 async function auditCapabilityUse(capability, user, resource) {
   await fetch('https://logs.wokelang.org/audit', {
@@ -368,41 +409,45 @@ async function auditCapabilityUse(capability, user, resource) {
     })
   });
 }
-```
+----
 
----
+'''''
 
-## 7. Summary
+=== 7. Summary
 
-### Is it realistic? **ABSOLUTELY YES!**
+==== Is it realistic? *ABSOLUTELY YES!*
 
-✅ **Consent-Aware HTTP:**
-- Simple to implement (cookie-based)
-- GDPR/privacy compliant
-- Works with Cloudflare Workers
-- Integrates with any frontend
+✅ *Consent-Aware HTTP:* - Simple to implement (cookie-based) -
+GDPR/privacy compliant - Works with Cloudflare Workers - Integrates with
+any frontend
 
-✅ **HTTP Capability Gateway:**
-- Proven pattern (used by Google, Cloudflare, etc.)
-- More secure than role-based access control
-- Perfect for microservices
-- Prevents privilege escalation
+✅ *HTTP Capability Gateway:* - Proven pattern (used by Google,
+Cloudflare, etc.) - More secure than role-based access control - Perfect
+for microservices - Prevents privilege escalation
 
-### Next Steps:
+==== Next Steps:
 
-1. **Test workers locally:**
-```bash
+[arabic]
+. *Test workers locally:*
+
+[source,bash]
+----
 wrangler dev consent-aware-http.js
-```
+----
 
-2. **Deploy to wokelang.org:**
-```bash
+[arabic, start=2]
+. *Deploy to wokelang.org:*
+
+[source,bash]
+----
 wrangler deploy
-```
+----
 
-3. **Integrate with WokeLang SSG:**
-- Add consent UI to site footer
-- Generate capability tokens from WokeLang backend
-- Add audit logging
+[arabic, start=3]
+. *Integrate with WokeLang SSG:*
 
-**Your sites will have world-class security AND privacy!** 🔒🚀
+* Add consent UI to site footer
+* Generate capability tokens from WokeLang backend
+* Add audit logging
+
+*Your sites will have world-class security AND privacy!* 🔒🚀
