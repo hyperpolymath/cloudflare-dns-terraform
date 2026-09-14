@@ -27,8 +27,14 @@
 #   CLOUDFLARE_API_TOKEN=... ./scripts/dns-origin-audit.sh
 #
 # TOKEN SCOPES (read-only is sufficient and recommended)
-#   Zone:Zone:Read      — list zones, read the SSL/TLS mode
-#   Zone:DNS:Read       — read records
+#   Zone:Zone:Read           — list zones
+#   Zone:DNS:Read            — read records
+#   Zone:Zone Settings:Read  — read the SSL/TLS mode. Zone:Read does NOT grant
+#                              this. Without it GET /zones/{id}/settings/ssl
+#                              fails, and the SSL check below can no longer
+#                              answer the one question it exists to answer:
+#                              whether a zone is on 'Full', the mode that let a
+#                              stranger's certificate through in 2026-09.
 #
 # EXIT CODES
 #   0  clean
@@ -59,7 +65,7 @@ done
 
 if [[ -z "$TOKEN" ]]; then
   echo "error: CLOUDFLARE_API_TOKEN not set" >&2
-  echo "hint:  a read-only token (Zone:Read + DNS:Read) is enough" >&2
+  echo "hint:  read-only is enough: Zone:Read + DNS:Read + Zone Settings:Read" >&2
   exit 2
 fi
 
@@ -155,7 +161,7 @@ while IFS= read -r zline; do
   [[ -z "$mode" ]] && mode="unknown"
   case "$mode" in
     strict)  ;;                                             # full (strict) — correct
-    unknown) echo "  note: could not read SSL mode (token scope?)" ;;
+    unknown) report "$zname SSL/TLS mode could not be read. The token is probably missing Zone Settings:Read. An unreadable mode is NOT a pass — the zone may be on 'Full', which accepts any origin certificate including a stranger's." ;;
     *)       report "$zname SSL/TLS mode is '$mode', not 'strict'. Full and Flexible both accept an origin that is not ours." ;;
   esac
 
@@ -187,13 +193,26 @@ while IFS= read -r zline; do
           target="${target%.}"
           [[ -z "$target" || "$target" == "." ]] && continue   # null MX is fine
           if ! suffix_allowed "$target"; then
-            resolved="$(dig +short "$target" A 2>/dev/null | tail -1 || true)"
-            if [[ -z "$resolved" ]]; then
+            # EVERY A and AAAA answer, not `| tail -1`. A target resolving to
+            # both a live origin and the dead box used to report clean or dirty
+            # purely by answer order, and AAAA was never examined at all —
+            # a hole in the exact detector built for this exact incident.
+            # `grep -Ev '\.$'` drops intermediate CNAME lines dig emits.
+            resolved=()
+            while IFS= read -r addr; do
+              [[ -n "$addr" ]] && resolved+=("$addr")
+            done < <( { dig +short "$target" A; dig +short "$target" AAAA; } 2>/dev/null \
+                        | grep -Ev '\.$' || true )
+            if [[ "${#resolved[@]}" -eq 0 ]]; then
               report "$rname ($rtype) targets $target, which does not resolve. A target that stopped resolving is how SPF and mail silently break."
-            elif in_list "$resolved" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
-              report "$rname ($rtype) targets $target, which resolves to DENIED $resolved."
-            elif ! in_list "$resolved" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
-              report "$rname ($rtype) targets $target, which resolves to $resolved, not on the allow-list."
+            else
+              for addr in "${resolved[@]}"; do
+                if in_list "$addr" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
+                  report "$rname ($rtype) targets $target, which resolves to DENIED $addr."
+                elif ! in_list "$addr" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
+                  report "$rname ($rtype) targets $target, which resolves to $addr, not on the allow-list."
+                fi
+              done
             fi
           fi
           ;;
