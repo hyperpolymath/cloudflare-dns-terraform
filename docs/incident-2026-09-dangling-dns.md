@@ -78,7 +78,8 @@ abuse accusation. Reporting the adult site's owner would be misreporting: they
 are another customer on a shared box and their WordPress is behaving normally.
 
 - **To:** `abuse@worldhost.group` (RIPE abuse contact for `65.181.113.0/24`)
-- **Cc:** Verpex support, referencing reseller account the reseller account (named in the private handover note)
+- **Cc:** Verpex support, referencing our reseller account
+  (`<RESELLER ACCOUNT>` — fill in when sending; deliberately not published here)
 - **Subject:** Default vhost on s4936.fra1.stableserver.net (65.181.113.13)
   serves a customer redirect for unmatched hostnames
 
@@ -110,7 +111,7 @@ are another customer on a shared box and their WordPress is behaving normally.
 > domains whose accounts have left it.
 >
 > Separately, could you confirm which server our reseller accounts occupy now?
-> Reseller account the reseller account (named in the private handover note).
+> Our reseller account reference is `<RESELLER ACCOUNT>`.
 >
 > Thank you.
 
