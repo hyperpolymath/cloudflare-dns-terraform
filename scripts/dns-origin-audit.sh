@@ -26,6 +26,19 @@
 # USAGE
 #   CLOUDFLARE_API_TOKEN=... ./scripts/dns-origin-audit.sh
 #
+# AUDIT_SCOPE — which question this run answers. Default `all`.
+#   origins  dangling / denied / unlisted record origins. THE INCIDENT: a record
+#            left aimed at a server the account no longer occupies.
+#   ssl      zones not on Full (strict). A REMEDIATION PROGRAMME (R-F), not an
+#            incident — it needs an origin certificate minted and installed per
+#            zone before a zone can legitimately pass.
+#   all      both, under one exit code. For running by hand.
+#
+# These are separate CI jobs on purpose. Sharing one exit code would mean the
+# incident check could never go green until a 36-zone certificate programme
+# finished, and a gate that is expected to be red stops being read. One gate,
+# one question — which is the defect this script itself shipped with.
+#
 # TOKEN SCOPES (read-only is sufficient and recommended)
 #   Zone:Zone:Read           — list zones
 #   Zone:DNS:Read            — read records
@@ -50,7 +63,9 @@
 
 set -euo pipefail
 
-CF_API="https://api.cloudflare.com/client/v4"
+# Overridable ONLY so this script can be driven against a mock API in a test.
+# An unverifiable detector is how the fault it looks for survived six months.
+CF_API="${CF_API:-https://api.cloudflare.com/client/v4}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ALLOWLIST="${ALLOWLIST:-$REPO_ROOT/allowed-origins.txt}"
 TOKEN="${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}"
@@ -68,6 +83,15 @@ if [[ -z "$TOKEN" ]]; then
   echo "hint:  read-only is enough: Zone:Read + DNS:Read + Zone Settings:Read" >&2
   exit 2
 fi
+
+AUDIT_SCOPE="${AUDIT_SCOPE:-all}"
+case "$AUDIT_SCOPE" in
+  origins|ssl|all) ;;
+  *) echo "error: AUDIT_SCOPE must be origins, ssl or all (got '$AUDIT_SCOPE')" >&2; exit 2 ;;
+esac
+DO_ORIGINS=0; DO_SSL=0
+[[ "$AUDIT_SCOPE" == "origins" || "$AUDIT_SCOPE" == "all" ]] && DO_ORIGINS=1
+[[ "$AUDIT_SCOPE" == "ssl"     || "$AUDIT_SCOPE" == "all" ]] && DO_SSL=1
 
 if [[ ! -f "$ALLOWLIST" ]]; then
   echo "error: allow-list not found at $ALLOWLIST" >&2
@@ -98,6 +122,8 @@ done < "$ALLOWLIST"
 # whitespace- or comma-separated. Absent, the audit still runs and simply
 # reports every origin as unlisted, which is the correct fail-loud default.
 if [[ -n "${ALLOWED_ORIGIN_IPS:-}" ]]; then
+  # shellcheck disable=SC2020  # intentional per-character map below: both
+  # a comma and a space become a newline, so either separator works.
   while read -r extra_ip; do
     [[ -n "$extra_ip" ]] && ALLOW_IPS+=("$extra_ip")
   done <<< "$(echo "$ALLOWED_ORIGIN_IPS" | tr ", " "\n\n")"
@@ -131,7 +157,7 @@ report() {
 }
 
 # ---- enumerate zones ----------------------------------------------------
-echo "== Cloudflare origin audit — $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
+echo "== Cloudflare origin audit [scope=$AUDIT_SCOPE] — $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
 page=1
 ZONES_JSON="$(mktemp)"
 trap 'rm -f "$ZONES_JSON"' EXIT
@@ -154,80 +180,90 @@ while IFS= read -r zline; do
   echo "-- $zname"
 
   # SSL/TLS mode. Full is the mode that let a stranger's certificate through.
-  # `|| echo unknown` is load-bearing: under `set -e` a curl failure here
-  # (token without Zone Settings read) would otherwise kill the whole run on
-  # the first zone, and the "unknown" branch below would never be reached.
-  mode="$(cf "$CF_API/zones/$zid/settings/ssl" 2>/dev/null | jq -r '.result.value // "unknown"' || echo unknown)"
-  [[ -z "$mode" ]] && mode="unknown"
-  case "$mode" in
-    strict)  ;;                                             # full (strict) — correct
-    unknown) report "$zname SSL/TLS mode could not be read. The token is probably missing Zone Settings:Read. An unreadable mode is NOT a pass — the zone may be on 'Full', which accepts any origin certificate including a stranger's." ;;
-    *)       report "$zname SSL/TLS mode is '$mode', not 'strict'. Full and Flexible both accept an origin that is not ours." ;;
-  esac
+  if [[ "$DO_SSL" -eq 1 ]]; then
+    # `|| echo unknown` is load-bearing: under `set -e` a curl failure here
+    # (token without Zone Settings read) would otherwise kill the whole run on
+    # the first zone, and the "unknown" branch below would never be reached.
+    mode="$(cf "$CF_API/zones/$zid/settings/ssl" 2>/dev/null | jq -r '.result.value // "unknown"' || echo unknown)"
+    [[ -z "$mode" ]] && mode="unknown"
+    case "$mode" in
+      strict)  ;;                                             # full (strict) — correct
+      unknown) report "$zname SSL/TLS mode could not be read. The token is probably missing Zone Settings:Read. An unreadable mode is NOT a pass — the zone may be on 'Full', which accepts any origin certificate including a stranger's." ;;
+      *)       report "$zname SSL/TLS mode is '$mode', not 'strict'. Full and Flexible both accept an origin that is not ours." ;;
+    esac
+  fi
 
   # All DNS records, paginated.
-  rpage=1
-  while :; do
-    rresp="$(cf "$CF_API/zones/$zid/dns_records?per_page=100&page=$rpage")"
-    while IFS= read -r rec; do
-      [[ -z "$rec" ]] && continue
-      rtype="$(echo "$rec" | jq -r .type)"
-      rname="$(echo "$rec" | jq -r .name)"
-      rcontent="$(echo "$rec" | jq -r .content)"
-      rproxied="$(echo "$rec" | jq -r '.proxied // false')"
+  if [[ "$DO_ORIGINS" -eq 1 ]]; then
+    rpage=1
+    while :; do
+      rresp="$(cf "$CF_API/zones/$zid/dns_records?per_page=100&page=$rpage")"
+      while IFS= read -r rec; do
+        [[ -z "$rec" ]] && continue
+        rtype="$(echo "$rec" | jq -r .type)"
+        rname="$(echo "$rec" | jq -r .name)"
+        rcontent="$(echo "$rec" | jq -r .content)"
+        rproxied="$(echo "$rec" | jq -r '.proxied // false')"
 
-      # Deny-list first: these are known-dead and always a finding.
-      if in_list "$rcontent" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
-        report "$rname ($rtype) points at DENIED origin $rcontent — this is the dangling-DNS failure. Delete the record."
-        continue
-      fi
+        # Deny-list first: these are known-dead and always a finding.
+        if in_list "$rcontent" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
+          report "$rname ($rtype) points at DENIED origin $rcontent — this is the dangling-DNS failure. Delete the record."
+          continue
+        fi
 
-      case "$rtype" in
-        A|AAAA)
-          if ! in_list "$rcontent" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
-            report "$rname ($rtype) origin $rcontent is not on the allow-list (proxied=$rproxied). Either add it to allowed-origins.txt or delete the record."
-          fi
-          ;;
-        CNAME|MX|NS|SRV)
-          target="$(echo "$rcontent" | awk '{print $NF}')"
-          target="${target%.}"
-          [[ -z "$target" || "$target" == "." ]] && continue   # null MX is fine
-          if ! suffix_allowed "$target"; then
-            # EVERY A and AAAA answer, not `| tail -1`. A target resolving to
-            # both a live origin and the dead box used to report clean or dirty
-            # purely by answer order, and AAAA was never examined at all —
-            # a hole in the exact detector built for this exact incident.
-            # `grep -Ev '\.$'` drops intermediate CNAME lines dig emits.
-            resolved=()
-            while IFS= read -r addr; do
-              [[ -n "$addr" ]] && resolved+=("$addr")
-            done < <( { dig +short "$target" A; dig +short "$target" AAAA; } 2>/dev/null \
-                        | grep -Ev '\.$' || true )
-            if [[ "${#resolved[@]}" -eq 0 ]]; then
-              report "$rname ($rtype) targets $target, which does not resolve. A target that stopped resolving is how SPF and mail silently break."
-            else
-              for addr in "${resolved[@]}"; do
-                if in_list "$addr" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
-                  report "$rname ($rtype) targets $target, which resolves to DENIED $addr."
-                elif ! in_list "$addr" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
-                  report "$rname ($rtype) targets $target, which resolves to $addr, not on the allow-list."
-                fi
-              done
+        case "$rtype" in
+          A|AAAA)
+            if ! in_list "$rcontent" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
+              report "$rname ($rtype) origin $rcontent is not on the allow-list (proxied=$rproxied). Either add it to allowed-origins.txt or delete the record."
             fi
-          fi
-          ;;
-      esac
-    done < <(echo "$rresp" | jq -c '.result[]')
+            ;;
+          CNAME|MX|NS|SRV)
+            target="$(echo "$rcontent" | awk '{print $NF}')"
+            target="${target%.}"
+            [[ -z "$target" || "$target" == "." ]] && continue   # null MX is fine
+            if ! suffix_allowed "$target"; then
+              # EVERY A and AAAA answer, not `| tail -1`. A target resolving to
+              # both a live origin and the dead box used to report clean or dirty
+              # purely by answer order, and AAAA was never examined at all —
+              # a hole in the exact detector built for this exact incident.
+              # `grep -Ev '\.$'` drops intermediate CNAME lines dig emits.
+              resolved=()
+              while IFS= read -r addr; do
+                [[ -n "$addr" ]] && resolved+=("$addr")
+              done < <( { dig +short "$target" A; dig +short "$target" AAAA; } 2>/dev/null \
+                          | grep -Ev '\.$' || true )
+              if [[ "${#resolved[@]}" -eq 0 ]]; then
+                report "$rname ($rtype) targets $target, which does not resolve. A target that stopped resolving is how SPF and mail silently break."
+              else
+                for addr in "${resolved[@]}"; do
+                  if in_list "$addr" "${DENY_IPS[@]+"${DENY_IPS[@]}"}"; then
+                    report "$rname ($rtype) targets $target, which resolves to DENIED $addr."
+                  elif ! in_list "$addr" "${ALLOW_IPS[@]+"${ALLOW_IPS[@]}"}"; then
+                    report "$rname ($rtype) targets $target, which resolves to $addr, not on the allow-list."
+                  fi
+                done
+              fi
+            fi
+            ;;
+        esac
+      done < <(echo "$rresp" | jq -c '.result[]')
 
-    rtotal="$(echo "$rresp" | jq -r '.result_info.total_pages')"
-    [[ "$rpage" -ge "$rtotal" ]] && break
-    rpage=$((rpage + 1))
-  done
+      rtotal="$(echo "$rresp" | jq -r '.result_info.total_pages')"
+      [[ "$rpage" -ge "$rtotal" ]] && break
+      rpage=$((rpage + 1))
+    done
+  fi
 done < "$ZONES_JSON"
 
 echo
 if [[ "$FINDINGS" -gt 0 ]]; then
-  echo "RESULT: $FINDINGS finding(s). A record is aimed somewhere we do not control."
+  echo "RESULT [$AUDIT_SCOPE]: $FINDINGS finding(s)."
   exit 1
 fi
-echo "RESULT: clean. Every origin is on the allow-list and every zone is on Full (strict)."
+# The verdict must claim only what this scope actually examined. A run that
+# skipped the SSL check must never print a sentence containing "Full (strict)".
+case "$AUDIT_SCOPE" in
+  origins) echo "RESULT [origins]: clean. Every record origin is on the allow-list. SSL/TLS mode NOT examined in this scope." ;;
+  ssl)     echo "RESULT [ssl]: clean. Every zone is on Full (strict). Record origins NOT examined in this scope." ;;
+  all)     echo "RESULT [all]: clean. Every origin is on the allow-list and every zone is on Full (strict)." ;;
+esac
