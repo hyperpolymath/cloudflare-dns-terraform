@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+#
+# Catches dangling DNS before a visitor does.
+#
+# Every previous instance of the jewell.nexus redirect was discovered by a
+# family member noticing it on LinkedIn, weeks after it started. This is the
+# missing feedback loop: it asks the same two questions every morning.
+name: DNS Origin Audit
+
+permissions: {}
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily, shortly after 06:00 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - 'allowed-origins.txt'
+      - 'scripts/dns-origin-audit.sh'
+      - 'scripts/edge-redirect-check.sh'
+      - '.github/workflows/dns-origin-audit.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4
+
+      - name: Install jq and dig
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq dnsutils
+
+      # Reads the true origin of every record in every zone. This is the check
+      # that sees through the proxy: a proxied record's public A record shows
+      # Cloudflare addresses and hides where the edge actually fetches from.
+      - name: Audit record origins across all zones
+        id: origins
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ALLOWED_ORIGIN_IPS: ${{ secrets.ALLOWED_ORIGIN_IPS }}
+        run: ./scripts/dns-origin-audit.sh
+
+      # Asks the question a visitor asks. Needs no credentials, so it still runs
+      # and still reports even if the token above is missing or expired.
+      - name: Check no hostname sends visitors off-estate
+        if: always()
+        run: ./scripts/edge-redirect-check.sh
