@@ -63,10 +63,10 @@ bad()  { printf 'FAIL %s\n       %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
 # vacuously — the exact absence-shaped failure this incident kept producing — so
 # the extraction is itself asserted before anything is run.
 
-sed -n '/^is_private_ip() {$/,/^}$/p; /^url_host_port() {$/,/^}$/p; /^resolve_public() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p' \
+sed -n '/^is_ip_literal() {$/,/^}$/p; /^is_private_ip() {$/,/^}$/p; /^url_host_port() {$/,/^}$/p; /^resolve_public() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p; /^DNS_FALLBACKS=/p' \
     "$SUT" > "$WORK/sut.bash"
 
-for fn in is_private_ip url_host_port resolve_public walk_redirects login_surface; do
+for fn in is_ip_literal is_private_ip url_host_port resolve_public walk_redirects login_surface; do
   grep -q "^${fn}() {$" "$WORK/sut.bash" \
     || { echo "preflight: did not extract ${fn}() from $SUT" >&2; exit 2; }
 done
@@ -75,6 +75,13 @@ done
 # run against the real prefix list rather than a copy that can drift from it.
 grep -q '^LOGIN_PREFIXES=' "$WORK/sut.bash" \
   || { echo "preflight: did not extract LOGIN_PREFIXES from $SUT" >&2; exit 2; }
+
+# DNS_FALLBACKS is lifted too. If it were missing the loop in resolve_public
+# would run with an unset variable under `set -u` and every control would die
+# the same way, which reads as a harness fault rather than as the missing
+# symbol it is — so it is asserted by name like the functions above.
+grep -q '^DNS_FALLBACKS=' "$WORK/sut.bash" \
+  || { echo "preflight: did not extract DNS_FALLBACKS from $SUT" >&2; exit 2; }
 bash -n "$WORK/sut.bash" \
   || { echo "preflight: extracted functions do not parse" >&2; exit 2; }
 
@@ -140,6 +147,11 @@ cat > "$WORK/bin/dig" <<'DSTUB'
 n=$(( $(cat "$DIG_COUNT" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$DIG_COUNT"
 rtype="${!#}"
+# Was an explicit @resolver passed? The fallback path adds one and the system
+# resolver path does not, so a scenario can answer differently for the two —
+# which is what the retry control needs in order to mean anything.
+atres=""
+for a in "$@"; do case "$a" in @*) atres="${a#@}" ;; esac; done
 case "${STUB_DIG:-public}" in
   public)   [[ "$rtype" == "A" ]] && echo "203.0.113.10" ;;
   private)  [[ "$rtype" == "A" ]] && echo "10.0.0.5" ;;
@@ -150,6 +162,26 @@ case "${STUB_DIG:-public}" in
   cname)    [[ "$rtype" == "A" ]] && { echo "target.example.com."; echo "203.0.113.10"; } ;;
   # Public A, private AAAA — refused only if AAAA is looked at at all.
   v6priv)   if [[ "$rtype" == "A" ]]; then echo "203.0.113.10"; else echo "fd00::1"; fi ;;
+  # `dig +short` writes its OWN diagnostics to STDOUT and exits non-zero. The
+  # token `127.0.0.53#53:` matches the private-address pattern, which is how a
+  # runner's systemd-resolved timeout became a false "resolves to a private
+  # address" finding against a hostname that was never resolved at all.
+  digerr)   echo ";; communications error to 127.0.0.53#53: timed out"; exit 9 ;;
+  # The same failure with a diagnostic that does NOT look private. This is the
+  # direction no exclusion list could have caught: the token would have been
+  # accepted and PINNED as though it were an address, curl would reject the
+  # malformed --resolve, and the host would be reported `no answer` — the
+  # detector reporting clean for a host it never looked at.
+  digerrpub) echo ";; communications error to 8.8.8.8#53: connection refused"; exit 9 ;;
+  # System resolver errors, the first fallback answers. Without the retry a
+  # single flaky resolver turns the daily check permanently red, and a red that
+  # is always red is a red nobody reads.
+  digfb)    if [[ -n "$atres" ]]; then
+              [[ "$rtype" == "A" ]] && echo "203.0.113.10"
+              exit 0
+            else
+              echo ";; communications error to 127.0.0.53#53: timed out"; exit 9
+            fi ;;
   none)     : ;;
   *) echo "stub: unknown STUB_DIG '${STUB_DIG}'" >&2; exit 96 ;;
 esac
@@ -502,6 +534,103 @@ if [[ "$(cat "$STUB_RESOLVE")" == "webmail.example.com:443:203.0.113.10" ]]; the
 else
   bad "the body fetch is pinned to the caller's validated address" \
       "recorded pins: '$(cat "$STUB_RESOLVE")'"
+fi
+
+
+# --- A dig diagnostic is not a DNS answer ------------------------------------
+#
+# 25. `dig +short` writes its own diagnostics to STDOUT. The previous filter was
+#     a BLACKLIST (drop trailing-dot CNAME lines), so those words reached the
+#     private-address check, where the token `127.0.0.53#53:` matches `127.*`.
+#     Every token below is checked individually because resolve_public
+#     word-splits the answer text, so the unit of the defect is the TOKEN.
+for tok in 203.0.113.10 192.0.2.1 0.0.0.0 255.255.255.255 2001:db8::1 fd00::1 ::1; do
+  if is_ip_literal "$tok"; then
+    ok "accepts the address literal $tok"
+  else
+    bad "accepts the address literal $tok" "rejected a real address"
+  fi
+done
+for tok in ';;' communications error to '127.0.0.53#53:' timed out \
+           'target.example.com.' '8.8.8.8#53:' '' 'connection' '1.2.3' '1.2.3.4.5' \
+           '999.1.1.1' 'cafe:' 'no' 'servers' 'could' 'be' 'reached'; do
+  if is_ip_literal "$tok"; then
+    bad "rejects the non-address token '$tok'" \
+        "a dig diagnostic token was accepted as an address"
+  else
+    ok "rejects the non-address token '$tok'"
+  fi
+done
+
+# 26. THE REGRESSION. A resolver that times out must not be reported as a
+#     hostname resolving into private space. Before the fix this produced
+#     `refused: <host> resolves to private address 127.0.0.53#53:` — a finding
+#     naming an estate hostname for a fault in the runner's own resolver.
+dig_rc=0; run_walk ok200 "https://timeout.example.com/" digerr || dig_rc=$?
+if [[ "${WALK_BLOCKED:-}" != *"private address"* ]]; then
+  ok "a resolver timeout is not reported as a private-address refusal"
+else
+  bad "a resolver timeout is not reported as a private-address refusal" \
+      "blocked='${WALK_BLOCKED:-}'"
+fi
+
+# 27. And it is reported as its OWN kind AND as a finding (non-zero return), so
+#     the report loop labels it DNS UNRESOLVABLE instead of passing it over.
+#     WALK_CODE legitimately stays 000 here — no request was made — so the code
+#     is NOT the discriminator; the return is. "We could not look" recorded as a
+#     clean answer is the failure that hid mail.jewell.nexus for six months.
+if [[ "${WALK_KIND:-}" == "unresolved" && "$dig_rc" -ne 0 ]]; then
+  ok "an unresolvable hostname is reported as unresolved, not as no answer"
+else
+  bad "an unresolvable hostname is reported as unresolved, not as no answer" \
+      "kind='${WALK_KIND:-}' rc='$dig_rc'"
+fi
+
+# 28. Nothing was connected to. A name we could not resolve must cost zero
+#     HTTP requests, or the refusal happened after the connection again.
+if [[ -z "$(cat "$STUB_COUNT")" ]]; then
+  ok "an unresolvable hostname causes zero HTTP requests"
+else
+  bad "an unresolvable hostname causes zero HTTP requests" \
+      "made $(cat "$STUB_COUNT") request(s)"
+fi
+
+# 29. The direction an exclusion list could never have caught: a diagnostic
+#     naming a PUBLIC resolver. `8.8.8.8#53:` is not private, so the old code
+#     would have pinned it, curl would have rejected the malformed --resolve,
+#     and the host would have been reported `no answer` — clean, for a host
+#     never looked at. Assert both halves: no pin, and not a clean answer.
+run_walk ok200 "https://pubdiag.example.com/" digerrpub || true
+if [[ -z "$(cat "$STUB_RESOLVE")" && "${WALK_KIND:-}" == "unresolved" ]]; then
+  ok "a public-looking diagnostic is not pinned as an address"
+else
+  bad "a public-looking diagnostic is not pinned as an address" \
+      "pins='$(cat "$STUB_RESOLVE")' kind='${WALK_KIND:-}'"
+fi
+
+# 30. The retry is real: the system resolver errors, a fallback answers, and
+#     the walk proceeds normally. Without this, control 26's cure would turn
+#     every transient resolver hiccup into a permanent daily red — a red that
+#     is always red is a red nobody reads, which is how this estate got here.
+run_walk ok200 "https://fallback.example.com/" digfb || true
+if [[ "${WALK_CODE:-}" == "200" && "${WALK_KIND:-}" != "unresolved" \
+   && "$(cat "$STUB_RESOLVE")" == "fallback.example.com:443:203.0.113.10" ]]; then
+  ok "a resolver that errors falls through to the next one and still resolves"
+else
+  bad "a resolver that errors falls through to the next one and still resolves" \
+      "code='${WALK_CODE:-}' kind='${WALK_KIND:-}' pins='$(cat "$STUB_RESOLVE")'"
+fi
+
+# 31. The fan-out is BOUNDED to the error cases. A definitive empty answer
+#     (NXDOMAIN) must stop at the system resolver: exactly two queries, A and
+#     AAAA. Most estate hostnames do not exist, so a fallback storm here would
+#     triple the query count of every daily run for no information at all.
+run_walk noanswer "https://gone.example.com/" none || true
+if [[ "$(cat "$DIG_COUNT")" == "2" ]]; then
+  ok "a definitive NXDOMAIN costs two queries, not a fallback storm"
+else
+  bad "a definitive NXDOMAIN costs two queries, not a fallback storm" \
+      "made $(cat "$DIG_COUNT") dig call(s)"
 fi
 
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"

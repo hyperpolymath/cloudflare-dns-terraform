@@ -133,30 +133,101 @@ url_host_port() {
   return 0
 }
 
+# is_ip_literal TOKEN -> 0 if TOKEN is a bare IPv4 or IPv6 address literal.
+#
+# `dig +short` writes its OWN diagnostics to STDOUT, not to stderr:
+#
+#     ;; communications error to 127.0.0.53#53: timed out
+#
+# Those words are neither addresses nor CNAME targets, so the previous filter —
+# a BLACKLIST that dropped trailing-dot CNAME lines — passed them straight
+# through to the private-address check, where the token `127.0.0.53#53:` matches
+# `127.*`. The hostname was then reported as "resolves to a private address"
+# having never been resolved at all. That is a false FINDING, and it is exactly
+# what the edge job reported for one hostname on a GitHub runner whose
+# systemd-resolved stub timed out.
+#
+# The reason this is a whitelist rather than one more exclusion is the OTHER
+# direction, which is worse and which no exclusion list would have caught: a
+# diagnostic token that does not happen to look private — a resolver at
+# 8.8.8.8, say — would have been accepted as the address to PIN. curl would
+# then reject the malformed `--resolve`, the request would fail, and the host
+# would be reported `000 no answer`: the detector answering "clean" for a host
+# it never looked at. An exclusion list can only ever chase the diagnostics dig
+# happens to emit today. A shape test admits addresses and nothing else.
+is_ip_literal() {
+  local s="$1" o a b c d extra colons
+  case "$s" in
+    ''|*[!0-9a-fA-F.:]*) return 1 ;;
+  esac
+  case "$s" in
+    *:*)
+      # IPv6: hex digits and colons only (established above), and at least two
+      # colons — every real IPv6 literal has two, and no bare word does.
+      colons="${s//[!:]/}"
+      [[ "${#colons}" -ge 2 ]] || return 1
+      return 0 ;;
+  esac
+  IFS=. read -r a b c d extra <<< "$s"
+  [[ -z "$extra" && -n "$d" ]] || return 1
+  for o in "$a" "$b" "$c" "$d"; do
+    case "$o" in ''|*[!0-9]*) return 1 ;; esac
+    [[ $((10#$o)) -le 255 ]] || return 1
+  done
+  return 0
+}
+
+# Resolvers consulted in order: the system resolver first, the public ones ONLY
+# if it errors. A normal NXDOMAIN therefore still costs exactly one query per
+# record type, and the fan-out is bounded to the error cases that need it.
+DNS_FALLBACKS="${DNS_FALLBACKS:-1.1.1.1 8.8.8.8}"
+
 # resolve_public HOST -> sets RESOLVE_IP, RESOLVE_BLOCKED. Returns:
 #   0  resolved, every answer is public; RESOLVE_IP is the address to pin
-#   1  no address at all — the caller reports this as 000, not as a refusal,
-#      and CRUCIALLY makes no HTTP request
+#   1  no address at all, and a resolver said so definitively (NXDOMAIN or no
+#      records) — the caller reports this as 000, not as a refusal, and
+#      CRUCIALLY makes no HTTP request
 #   2  refused; RESOLVE_BLOCKED says which answer was private
+#   3  could not resolve: EVERY resolver errored. This is neither an answer nor
+#      a definitive absence of one, so the caller must report it as its own
+#      thing. "We could not look" recorded as "clean" is the precise failure
+#      that hid mail.jewell.nexus for six months, so it must never collapse
+#      into the 000 branch.
 #
 # EVERY answer is checked, not just the one we pin. A resolver that returns a
 # public address first and a private one second would otherwise leave a private
 # address reachable on any retry or by reordering.
 resolve_public() {
-  local host="$1" ip answers
+  local host="$1" ip line rtype r out rc_q answers
   RESOLVE_IP=""; RESOLVE_BLOCKED=""
-  answers="$( { dig +short +time=5 +tries=2 "$host" A
-                dig +short +time=5 +tries=2 "$host" AAAA; } 2>/dev/null \
-              | grep -v '\.$' || true )"
-  [[ -n "$answers" ]] || return 1
-  for ip in $answers; do
-    if is_private_ip "$ip"; then
-      RESOLVE_BLOCKED="refused: $host resolves to private address $ip"
-      return 2
+  for r in "" $DNS_FALLBACKS; do
+    answers=""; rc_q=0
+    for rtype in A AAAA; do
+      if [[ -n "$r" ]]; then
+        out="$(dig +short +time=5 +tries=2 "@$r" "$host" "$rtype" 2>/dev/null)" || rc_q=1
+      else
+        out="$(dig +short +time=5 +tries=2 "$host" "$rtype" 2>/dev/null)" || rc_q=1
+      fi
+      while read -r line; do
+        is_ip_literal "$line" && answers="$answers $line"
+      done <<< "$out"
+    done
+    # Any literal answer is a definitive reply: validate all of them and stop.
+    if [[ -n "$answers" ]]; then
+      for ip in $answers; do
+        if is_private_ip "$ip"; then
+          RESOLVE_BLOCKED="refused: $host resolves to private address $ip"
+          return 2
+        fi
+      done
+      for ip in $answers; do RESOLVE_IP="$ip"; break; done
+      return 0
     fi
+    # No literals AND both queries exited cleanly: a real absence of records.
+    [[ "$rc_q" -eq 0 ]] && return 1
+    # Otherwise this resolver errored — try the next one.
   done
-  RESOLVE_IP="$(head -1 <<< "$answers")"
-  return 0
+  return 3
 }
 
 # walk_redirects URL -> sets WALK_CODE, WALK_FINAL, WALK_BLOCKED, WALK_PIN
@@ -167,7 +238,7 @@ resolve_public() {
 #                              resolving it a second time
 walk_redirects() {
   local url="$1" hop=0 code ip redir rc
-  WALK_CODE="000"; WALK_FINAL="$url"; WALK_BLOCKED=""; WALK_PIN=""
+  WALK_CODE="000"; WALK_FINAL="$url"; WALK_BLOCKED=""; WALK_PIN=""; WALK_KIND="refused"
   while :; do
     case "$url" in
       https://*) ;;
@@ -179,6 +250,13 @@ walk_redirects() {
     resolve_public "$URL_HOST"; rc=$?
     if [[ "$rc" -eq 2 ]]; then
       WALK_BLOCKED="$RESOLVE_BLOCKED (hop: $url)"; return 1
+    fi
+    if [[ "$rc" -eq 3 ]]; then
+      # Every resolver errored. Reported as its own KIND, never as 000: an
+      # unanswerable question must not be recorded as a reassuring answer.
+      WALK_KIND="unresolved"
+      WALK_BLOCKED="DNS for $URL_HOST could not be resolved by the system resolver or any of: $DNS_FALLBACKS — NOT CHECKED, which is not the same as clean (hop: $url)"
+      return 1
     fi
     if [[ "$rc" -eq 1 ]]; then
       # No address: nothing to connect to, and nothing was connected to.
@@ -252,7 +330,16 @@ for h in "${HOSTS[@]}"; do
   # script are the ones suspected of dangling, so "it tried to send us somewhere
   # we refuse to go" is precisely the signal we are looking for.
   if ! walk_redirects "https://$h/"; then
-    printf '  %-34s -- REFUSED REDIRECT CHAIN: %s\n' "$h" "$WALK_BLOCKED"
+    # Two different facts, two different labels. "We refuse to follow this
+    # chain" and "we could not resolve this name at all" are both findings,
+    # but conflating them would let a resolver outage read as an estate
+    # problem — and, far worse, invite someone to dismiss a real refusal as
+    # flaky DNS.
+    if [[ "$WALK_KIND" == "unresolved" ]]; then
+      printf '  %-34s -- DNS UNRESOLVABLE: %s\n' "$h" "$WALK_BLOCKED"
+    else
+      printf '  %-34s -- REFUSED REDIRECT CHAIN: %s\n' "$h" "$WALK_BLOCKED"
+    fi
     FINDINGS=$((FINDINGS + 1))
     continue
   fi
@@ -282,6 +369,12 @@ echo
 if [[ "$FINDINGS" -gt 0 ]]; then
   echo "RESULT: $FINDINGS finding(s)."
   echo "LEAVES ESTATE = a visitor opening that hostname lands somewhere we do not own."
+  echo "REFUSED REDIRECT CHAIN = a hop we declined to follow (non-https, private"
+  echo "                 address, unparseable, or too many hops). The chain is the"
+  echo "                 finding; it is not a tooling failure."
+  echo "DNS UNRESOLVABLE = every resolver errored, so this hostname was NOT CHECKED."
+  echo "                 It is reported rather than passed over, because an"
+  echo "                 unanswered question is not a clean answer."
   echo "LOGIN FORM     = that hostname serves a password field; if its origin is a"
   echo "                 server we have left, the password goes to a stranger. Worse"
   echo "                 than a redirect, so fix it first."
