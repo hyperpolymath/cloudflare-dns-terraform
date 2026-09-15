@@ -63,13 +63,18 @@ bad()  { printf 'FAIL %s\n       %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
 # vacuously — the exact absence-shaped failure this incident kept producing — so
 # the extraction is itself asserted before anything is run.
 
-sed -n '/^is_private_ip() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p' \
+sed -n '/^is_private_ip() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p' \
     "$SUT" > "$WORK/sut.bash"
 
-for fn in is_private_ip walk_redirects; do
+for fn in is_private_ip walk_redirects login_surface; do
   grep -q "^${fn}() {$" "$WORK/sut.bash" \
     || { echo "preflight: did not extract ${fn}() from $SUT" >&2; exit 2; }
 done
+
+# LOGIN_PREFIXES is lifted from the script as well, so the login controls below
+# run against the real prefix list rather than a copy that can drift from it.
+grep -q '^LOGIN_PREFIXES=' "$WORK/sut.bash" \
+  || { echo "preflight: did not extract LOGIN_PREFIXES from $SUT" >&2; exit 2; }
 bash -n "$WORK/sut.bash" \
   || { echo "preflight: extracted functions do not parse" >&2; exit 2; }
 
@@ -84,6 +89,24 @@ cat > "$WORK/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 n=$(( $(cat "$STUB_COUNT" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_COUNT"
+# walk_redirects asks curl for -w; the login-surface body fetch does not. Serve
+# each its own shape, or the body controls silently measure the walk's output
+# instead of a page. An unset STUB_BODY fails LOUDLY rather than defaulting: a
+# stub with a permissive default cannot report that it was never configured.
+has_w=0
+for a in "$@"; do [[ "$a" == "-w" ]] && has_w=1; done
+if [[ "$has_w" == 0 ]]; then
+  case "${STUB_BODY:-none}" in
+    m_webmail) printf '<title>Webmail Login</title>\n' ;;
+    m_cpanel)  printf '<title>cPanel Login</title>\n' ;;
+    m_name)    printf '<form><input name=pass></form>\n' ;;
+    m_id)      printf '<form><input id="login_password"></form>\n' ;;
+    benign) printf '<html><title>A2ML</title><p>nothing to log into</p></html>\n' ;;
+    none)   echo "stub: a body was fetched but STUB_BODY is unset" >&2; exit 98 ;;
+    *)      echo "stub: unknown STUB_BODY '${STUB_BODY}'" >&2; exit 97 ;;
+  esac
+  exit 0
+fi
 case "${STUB_MODE:-ok200}" in
   ok200)     echo "200 203.0.113.10" ;;
   noanswer)  exit 7 ;;
@@ -201,6 +224,68 @@ else
 fi
 
 echo
+echo "--- login_surface"
+
+# This function had NO control in either suite until now, and the live sweep
+# cannot supply one: no webmail./cpanel./webdisk./whm. hostname answers anywhere
+# in the estate, so every real run skips it entirely. A green sweep has therefore
+# never been evidence about this code at all — which is exactly the shape of
+# fault this whole workflow exists to prevent.
+
+run_login() { export STUB_BODY="$1"; : > "$STUB_COUNT"; login_surface "$2" "$3" "$4"; }
+
+# 8a-8d. One control per marker in the detection regex, each fixture matching
+#        exactly ONE alternative. A single fixture that matched several would
+#        let any one marker be deleted with the suite still green — measured:
+#        an earlier fixture matched 2 of the 4, and a mutant that blinded one
+#        of them survived at 36/36.
+for m in m_webmail m_cpanel m_name m_id; do
+  if run_login "$m" "webmail.example.com" 200 "https://webmail.example.com/"; then
+    ok "detects login marker: $m"
+  else
+    bad "detects login marker: $m" "this marker no longer fires; a real login page would read as clean"
+  fi
+done
+
+# 9. An ordinary page on the same hostname is NOT reported. Without this, a
+#    function that returned 0 unconditionally would still pass control 8.
+if ! run_login benign "webmail.example.com" 200 "https://webmail.example.com/"; then
+  ok "does not report an ordinary page as a login form"
+else
+  bad "does not report an ordinary page" "a page with no login markers was flagged"
+fi
+
+# 10. THE CONTROL FOR THIS COMMIT: the body is fetched from the URL the caller
+#     already walked and validated, in exactly ONE request. The previous version
+#     re-walked the chain itself, so it issued two or more requests per host and
+#     clobbered the WALK_* globals while the caller was still holding them.
+run_login m_webmail "webmail.example.com" 200 "https://webmail.example.com/" || true
+if [[ "$(cat "$STUB_COUNT")" == "1" ]]; then
+  ok "fetches the body in one request, from the caller's already-validated URL"
+else
+  bad "fetches the body in one request" \
+      "made $(cat "$STUB_COUNT") request(s) — it is walking the chain a second time"
+fi
+
+# 11. A non-200 response is never body-fetched: no request at all. STUB_BODY is
+#     unset so a stray fetch also fails loudly instead of being served a page.
+unset STUB_BODY; : > "$STUB_COUNT"
+if ! login_surface "webmail.example.com" 301 "https://webmail.example.com/" \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "does not fetch a body for a non-200 response"
+else
+  bad "does not fetch a body for a non-200 response" "calls='$(cat "$STUB_COUNT")'"
+fi
+
+# 12. A hostname outside LOGIN_PREFIXES is never body-fetched either.
+unset STUB_BODY; : > "$STUB_COUNT"
+if ! login_surface "www.example.com" 200 "https://www.example.com/" \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "does not fetch a body for a host outside LOGIN_PREFIXES"
+else
+  bad "does not fetch a body outside LOGIN_PREFIXES" "calls='$(cat "$STUB_COUNT")'"
+fi
+
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -eq 0 ]]; then
   echo "RESULT: the follower follows, and refuses what it must."

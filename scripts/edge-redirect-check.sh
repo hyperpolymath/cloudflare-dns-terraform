@@ -99,6 +99,7 @@ is_private_ip() {
     172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
     100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) return 0 ;;
     ::1|fe80:*|fc??:*|fd??:*|fc:*|fd:*) return 0 ;;
+    *) ;;
   esac
   return 1
 }
@@ -144,14 +145,16 @@ walk_redirects() {
 LOGIN_PREFIXES="webmail cpanel webdisk whm"
 
 login_surface() {
-  local host="$1" code="$2" prefix body
+  local host="$1" code="$2" final="$3" prefix body
   [[ "$code" == "200" ]] || return 1
   for prefix in $LOGIN_PREFIXES; do
     if [[ "$host" == "$prefix."* ]]; then
-      # Same hop validation as the main loop: this fetches a body from a
-      # hostname already suspected of being on someone else's server.
-      walk_redirects "https://$host/" || return 1
-      body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0                    "$WALK_FINAL" 2>/dev/null || true)"
+      # $final is the last URL of a chain the caller already walked hop by hop,
+      # so its scheme and peer address are already validated. Fetch it directly
+      # rather than walking again: a second walk doubles the requests and
+      # clobbers the WALK_* globals the caller is still holding.
+      body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0 \
+                   "$final" 2>/dev/null || true)"
       # cPanel/Webmail login markers. Kept broad on purpose: a false positive
       # costs one manual look, a false negative costs a mailbox.
       if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
@@ -188,7 +191,7 @@ for h in "${HOSTS[@]}"; do
   fi
 
   if on_estate "$final"; then
-    if login_surface "$h" "$code"; then
+    if login_surface "$h" "$code" "$final"; then
       printf '  %-34s %s LOGIN FORM served here\n' "$h" "$code"
       FINDINGS=$((FINDINGS + 1))
     else
