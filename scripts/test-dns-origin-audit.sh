@@ -146,8 +146,20 @@ chmod +x "$WORK/bin/dig"
 # ---- allow-list fixture -----------------------------------------------
 # Deliberately NOT the repo's own file: this must test the logic, not today's
 # estate inventory, or the controls change meaning whenever the estate does.
+# Fixture allow-list. Deliberately NOT the repo's own file: this must test the
+# logic, not today's estate inventory, or the controls change meaning whenever
+# the estate does.
+#
+# Every address below is RFC 5737 / RFC 3849 documentation space -- 192.0.2.0/24
+# (TEST-NET-1) for the denied "dead box", 198.51.100.0/24 (TEST-NET-2) for the
+# allowed origin, 2001:db8::/32 for IPv6. NEVER put a real estate origin IP in
+# this file. This repo is PUBLIC, and a real unproxied origin written here is an
+# origin-IP inventory that defeats the whole point of proxying -- the same
+# disclosure that was stripped out of allowed-origins.txt and moved behind the
+# ALLOWED_ORIGIN_IPS secret. The logic under test cannot tell the difference, so
+# there is nothing to gain and an origin to lose.
 cat > "$WORK/allowed-origins.txt" <<'ALLOW'
-deny 65.181.113.13
+deny 192.0.2.13
 suffix github.io
 ALLOW
 export ALLOWLIST="$WORK/allowed-origins.txt"
@@ -211,14 +223,14 @@ AUDIT_SCOPE=all check "missing token exits 2" 2 "+CLOUDFLARE_API_TOKEN not set"
 
 # 3. THE INCIDENT. A record on the dead box must be reported, and the verdict of
 #    an origins-only run must not claim anything about SSL.
-echo '65.181.113.13' > "$WORK/dig_a"
+echo '192.0.2.13' > "$WORK/dig_a"
 : > "$WORK/dig_aaaa"
 echo 'strict' > "$WORK/ssl_mode"
 cat > "$WORK/records" <<'R'
-[{"type":"A","name":"mail.jewell.nexus","content":"65.181.113.13","proxied":true}]
+[{"type":"A","name":"mail.jewell.nexus","content":"192.0.2.13","proxied":true}]
 R
 AUDIT_SCOPE=origins check "dead-box A record is a finding" 1 \
-  "+DENIED origin 65.181.113.13" "-Full (strict)"
+  "+DENIED origin 192.0.2.13" "-Full (strict)"
 
 # 4. REGRESSION, defect 1. An unreadable SSL mode must be a FINDING. This is the
 #    control that would have caught the `echo`-not-`report` defect: before the
@@ -246,9 +258,9 @@ AUDIT_SCOPE=ssl check "SSL mode 'strict' passes" 0 \
 #    is unreachable until Phase 4 and a permanently-red gate stops being read.
 echo 'full' > "$WORK/ssl_mode"
 cat > "$WORK/records" <<'R'
-[{"type":"A","name":"mail.jewell.nexus","content":"69.72.149.237","proxied":false}]
+[{"type":"A","name":"mail.jewell.nexus","content":"198.51.100.237","proxied":false}]
 R
-export ALLOWED_ORIGIN_IPS="69.72.149.237"
+export ALLOWED_ORIGIN_IPS="198.51.100.237"
 AUDIT_SCOPE=origins check "origins goes GREEN while the zone is on 'full'" 0 \
   "+RESULT [origins]: clean" "+SSL/TLS mode NOT examined"
 AUDIT_SCOPE=ssl check "ssl stays RED for the same fixture" 1 "+is 'full', not 'strict'"
@@ -257,13 +269,13 @@ AUDIT_SCOPE=ssl check "ssl stays RED for the same fixture" 1 "+is 'full', not 's
 #    is an unlisted AAAA. `dig +short | tail -1` reported this fixture CLEAN —
 #    a silent miss on the exact incident, decided purely by answer order.
 echo 'strict' > "$WORK/ssl_mode"
-printf '65.181.113.13\n69.72.149.237\n' > "$WORK/dig_a"
+printf '192.0.2.13\n198.51.100.237\n' > "$WORK/dig_a"
 printf '2001:db8::dead\n' > "$WORK/dig_aaaa"
 cat > "$WORK/records" <<'R'
 [{"type":"CNAME","name":"webmail.jewell.nexus","content":"mail.jewell.nexus","proxied":true}]
 R
 AUDIT_SCOPE=origins check "CNAME target: every A and AAAA answer is checked" 1 \
-  "+resolves to DENIED 65.181.113.13" "+2001:db8::dead"
+  "+resolves to DENIED 192.0.2.13" "+2001:db8::dead"
 
 # 9. A target that stopped resolving is dangling too — how SPF and mail break
 #    silently. Empty answers must not read as clean.
@@ -275,7 +287,7 @@ AUDIT_SCOPE=origins check "CNAME target that does not resolve is a finding" 1 \
 # 10. NEGATIVE CONTROL. Everything correct must actually pass, or the controls
 #     above prove only that the script always complains.
 echo 'strict' > "$WORK/ssl_mode"
-printf '69.72.149.237\n' > "$WORK/dig_a"
+printf '198.51.100.237\n' > "$WORK/dig_a"
 : > "$WORK/dig_aaaa"
 AUDIT_SCOPE=all check "all-clean fixture passes in scope=all" 0 \
   "+RESULT [all]: clean"
@@ -295,7 +307,7 @@ AUDIT_SCOPE=origins check "allow-listed CNAME suffix passes" 0 \
 #     carry origin IPs because this repository is public.
 unset ALLOWED_ORIGIN_IPS
 cat > "$WORK/records" <<'R'
-[{"type":"A","name":"mail.jewell.nexus","content":"69.72.149.237","proxied":false}]
+[{"type":"A","name":"mail.jewell.nexus","content":"198.51.100.237","proxied":false}]
 R
 AUDIT_SCOPE=origins check "absent ALLOWED_ORIGIN_IPS fails loud" 1 \
   "+is not on the allow-list"
