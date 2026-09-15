@@ -56,6 +56,13 @@ jobs:
       - name: Run the scope and detection controls
         run: ./scripts/test-dns-origin-audit.sh
 
+      # The redirect follower has its own suite because it has its own
+      # failure mode: a version that refuses everything is "secure" and
+      # detects nothing, which is the fault this whole workflow exists to
+      # prevent. Hermetic — curl is stubbed, no network, no credential.
+      - name: Run the redirect-follower controls
+        run: ./scripts/test-edge-redirect-check.sh
+
   # THE INCIDENT. Reads the true origin of every record in every zone — the
   # check that sees through the proxy, because a proxied record's public A
   # record shows Cloudflare addresses and hides where the edge really fetches.

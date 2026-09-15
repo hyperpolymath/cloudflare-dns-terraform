@@ -33,6 +33,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CSV="${DOMAINS_CSV:-$REPO_ROOT/domains.csv}"
 TIMEOUT="${TIMEOUT:-20}"
+MAX_HOPS="${MAX_HOPS:-5}"
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 2; }
 
@@ -71,6 +72,69 @@ on_estate() {
   return 1
 }
 
+# --- Redirect following, done by us rather than by curl -L ---------------------
+#
+# This script's entire job is to follow redirects, so `curl -L` looks like the
+# obvious tool. It is the wrong one HERE, for a reason specific to this script:
+# the hostnames fed in are exactly the ones suspected of being dangling or
+# hostile. `curl -L` hands the whole chain to whoever controls the Location
+# header, which can walk the runner into loopback or RFC1918 space on the CI
+# machine, or downgrade the hop to plain HTTP (CWE-918; SonarCloud shell:S6506).
+# The cure is not to stop following redirects — that would delete the detector —
+# but to follow them one hop at a time and validate each hop before taking it.
+#
+# Enforced on EVERY hop, not just the last: scheme must be https, and the peer
+# must not be in private, loopback, link-local or CGNAT space. Bounded by
+# MAX_HOPS so a redirect loop cannot hang the job.
+#
+# Honest limit: this validates the address curl actually connected to, reported
+# by %{remote_ip} after the fact. It is not a DNS-rebinding defence — nothing
+# short of pinning the resolved address into the connection is. It closes the
+# open-redirect-into-private-space path, which is the one a dangling estate
+# hostname creates.
+
+is_private_ip() {
+  case "$1" in
+    10.*|127.*|0.*|169.254.*|192.168.*) return 0 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
+    100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) return 0 ;;
+    ::1|fe80:*|fc??:*|fd??:*|fc:*|fd:*) return 0 ;;
+  esac
+  return 1
+}
+
+# walk_redirects URL -> sets WALK_CODE, WALK_FINAL, WALK_BLOCKED
+#   WALK_BLOCKED non-empty  => the chain was refused, and why
+#   WALK_CODE 000           => the hostname did not answer at all
+walk_redirects() {
+  local url="$1" hop=0 code ip redir
+  WALK_CODE="000"; WALK_FINAL="$url"; WALK_BLOCKED=""
+  while :; do
+    case "$url" in
+      https://*) ;;
+      *) WALK_BLOCKED="refused non-https hop: $url"; return 1 ;;
+    esac
+    read -r code ip redir < <(curl -sS -o /dev/null --max-time "$TIMEOUT" \
+        --proto '=https' --max-redirs 0 \
+        -w '%{http_code} %{remote_ip} %{redirect_url}' "$url" 2>/dev/null \
+        || echo "000 - -")
+    if [[ -n "$ip" && "$ip" != "-" ]] && is_private_ip "$ip"; then
+      WALK_BLOCKED="refused hop into private space: $url -> $ip"
+      return 1
+    fi
+    if [[ "$code" == "000" ]]; then WALK_CODE="000"; return 0; fi
+    WALK_CODE="$code"; WALK_FINAL="$url"
+    case "$code" in 30[0-8]) ;; *) return 0 ;; esac
+    if [[ -z "$redir" || "$redir" == "-" ]]; then return 0; fi
+    hop=$((hop + 1))
+    if [[ "$hop" -gt "$MAX_HOPS" ]]; then
+      WALK_BLOCKED="refused chain longer than $MAX_HOPS hops (last: $url)"
+      return 1
+    fi
+    url="$redir"
+  done
+}
+
 # A cPanel proxy subdomain that answers with a login form is worse than a
 # redirect: the visitor types a mail password into it. The box answers these
 # names whether or not our account still lives there, so the form may be
@@ -84,7 +148,10 @@ login_surface() {
   [[ "$code" == "200" ]] || return 1
   for prefix in $LOGIN_PREFIXES; do
     if [[ "$host" == "$prefix."* ]]; then
-      body="$(curl -sS -L --max-time "$TIMEOUT" "https://$host/" 2>/dev/null || true)"
+      # Same hop validation as the main loop: this fetches a body from a
+      # hostname already suspected of being on someone else's server.
+      walk_redirects "https://$host/" || return 1
+      body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0                    "$WALK_FINAL" 2>/dev/null || true)"
       # cPanel/Webmail login markers. Kept broad on purpose: a false positive
       # costs one manual look, a false negative costs a mailbox.
       if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
@@ -103,8 +170,15 @@ echo "hostnames: ${#HOSTS[@]}"
 echo
 
 for h in "${HOSTS[@]}"; do
-  read -r code final < <(curl -sS -o /dev/null -L --max-time "$TIMEOUT" \
-      -w '%{http_code} %{url_effective}' "https://$h/" 2>/dev/null || echo "000 -")
+  # A refused chain is a FINDING, never a silent skip: the hostnames fed to this
+  # script are the ones suspected of dangling, so "it tried to send us somewhere
+  # we refuse to go" is precisely the signal we are looking for.
+  if ! walk_redirects "https://$h/"; then
+    printf '  %-34s -- REFUSED REDIRECT CHAIN: %s\n' "$h" "$WALK_BLOCKED"
+    FINDINGS=$((FINDINGS + 1))
+    continue
+  fi
+  code="$WALK_CODE"; final="$WALK_FINAL"
 
   # A hostname that does not resolve or does not answer is not a finding. The
   # danger is a hostname that answers and sends the visitor somewhere else.
