@@ -43,6 +43,7 @@ jobs:
   self-test:
     name: Self-test the audit against a mock API
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -61,6 +62,7 @@ jobs:
   dns-origins:
     name: No record aimed at a server we do not control
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: self-test
     permissions:
       contents: read
@@ -83,6 +85,7 @@ jobs:
   ssl-mode:
     name: Every zone on Full (strict)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: self-test
     permissions:
       contents: read
@@ -104,6 +107,7 @@ jobs:
   edge:
     name: No hostname sends a visitor off-estate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
