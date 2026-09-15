@@ -103,12 +103,19 @@ echo "$n" > "$STUB_COUNT"
 # Record every --resolve pin, so a control can assert the connection was PINNED
 # to the validated address rather than merely that the address was validated.
 prev=""
+np="ABSENT"
 for a in "$@"; do
   [[ "$prev" == "--resolve" ]] && echo "$a" >> "$STUB_RESOLVE"
+  [[ "$prev" == "--noproxy" ]] && np="$a"
   prev="$a"
 done
 has_w=0
 for a in "$@"; do [[ "$a" == "-w" ]] && has_w=1; done
+# One line per invocation: the --noproxy value (or ABSENT) and whether this was
+# the walk probe (-w) or the login-surface body fetch. Recorded for EVERY call,
+# because the two call sites are written separately and a flag dropped from one
+# alone is invisible to any control that only reads the other.
+echo "$np $has_w" >> "$STUB_NOPROXY"
 if [[ "$has_w" == 0 ]]; then
   case "${STUB_BODY:-none}" in
     m_webmail) printf '<title>Webmail Login</title>\n' ;;
@@ -191,7 +198,9 @@ chmod +x "$WORK/bin/dig"
 export PATH="$WORK/bin:$PATH"
 export STUB_COUNT="$WORK/calls"
 export STUB_RESOLVE="$WORK/pins"
+export STUB_NOPROXY="$WORK/noproxy"
 export DIG_COUNT="$WORK/digs"
+: > "$STUB_NOPROXY"   # exists from the start, so control 32 can never read an absent file
 
 # shellcheck disable=SC2034  # both are read by the functions sourced below
 TIMEOUT=20
@@ -631,6 +640,34 @@ if [[ "$(cat "$DIG_COUNT")" == "2" ]]; then
 else
   bad "a definitive NXDOMAIN costs two queries, not a fallback storm" \
       "made $(cat "$DIG_COUNT") dig call(s)"
+fi
+
+# 32. EVERY curl invocation carries `--noproxy '*'`.
+#
+#     A `--resolve` pin is a pin only for a DIRECT connection. With HTTPS_PROXY
+#     (or https_proxy / ALL_PROXY) set in the environment, curl never resolves
+#     the hostname at all: it CONNECTs to the proxy and hands over the NAME,
+#     which the proxy resolves with its own DNS. Every validation above the
+#     request still runs and still passes, and the request goes wherever the
+#     proxy points. So the pin controls (19-21) would stay green while the
+#     guarantee they assert is gone, and nothing in a recorded pin can show it.
+#
+#     The stub therefore records one line per invocation — the --noproxy value
+#     or ABSENT, plus whether this was the walk probe (-w) or the login-surface
+#     body fetch. This control asserts over EVERY invocation the whole suite
+#     made, and requires BOTH shapes to appear, because the two call sites are
+#     written separately: the earlier --resolve mutant proved a flag dropped
+#     from one call site alone is invisible to any control reading the other.
+np_total="$(wc -l < "$STUB_NOPROXY" | tr -d ' ')"
+np_ok="$(grep -c '^\* ' "$STUB_NOPROXY" || true)"
+np_walk="$(grep -c '^\* 1$' "$STUB_NOPROXY" || true)"
+np_body="$(grep -c '^\* 0$' "$STUB_NOPROXY" || true)"
+if [[ "$np_total" -ge 2 && "$np_ok" == "$np_total" \
+      && "$np_walk" -ge 1 && "$np_body" -ge 1 ]]; then
+  ok "every curl invocation refuses proxies, on both call sites"
+else
+  bad "every curl invocation refuses proxies, on both call sites" \
+      "$np_ok of $np_total invocation(s) carried --noproxy '*' (walk=$np_walk body=$np_body); recorded: $(sort "$STUB_NOPROXY" | uniq -c | tr '\n' ';')"
 fi
 
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"

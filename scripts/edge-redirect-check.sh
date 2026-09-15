@@ -96,9 +96,19 @@ on_estate() {
 # between the check and the connect (TOCTOU / DNS rebinding).
 #
 # So every hop now goes: resolve -> validate EVERY answer -> pin the approved
-# address with `curl --resolve host:port:addr`. curl then cannot connect
-# anywhere else, whatever DNS says next. The `%{remote_ip}` check is kept below
-# purely as an assertion that the pin was honoured.
+# address with `curl --resolve host:port:addr` AND `--noproxy '*'`. BOTH are
+# required, and the second is not belt-and-braces. A `--resolve` pin binds a
+# hostname to an address only for a DIRECT connection. If HTTPS_PROXY,
+# https_proxy or ALL_PROXY is set in the environment, curl does not resolve
+# the host at all - it CONNECTs to the proxy and hands it the HOSTNAME, which
+# the proxy resolves itself. The pin is then not a pin: every validation above
+# it still runs, still passes, and guards nothing, while the request goes
+# wherever the proxy's DNS points. That is the estate's recurring trap of a
+# comment asserting a property the code does not guarantee, so the flag is
+# here and a control asserts it on EVERY curl invocation.
+# With both, curl cannot connect anywhere else whatever DNS says next. The
+# `%{remote_ip}` check is kept below purely as an assertion that the pin was
+# honoured.
 
 is_private_ip() {
   case "$1" in
@@ -264,7 +274,7 @@ walk_redirects() {
     fi
     WALK_PIN="$URL_HOST:$URL_PORT:$RESOLVE_IP"
     read -r code ip redir < <(curl -sS -o /dev/null --max-time "$TIMEOUT" \
-        --proto '=https' --max-redirs 0 --resolve "$WALK_PIN" \
+        --proto '=https' --max-redirs 0 --noproxy '*' --resolve "$WALK_PIN" \
         -w '%{http_code} %{remote_ip} %{redirect_url}' "$url" 2>/dev/null \
         || echo "000 - -")
     # Assertion, not the defence. The pin above is the defence; this can only
@@ -307,7 +317,7 @@ login_surface() {
       # No pin means the caller never validated this URL, so refuse to fetch.
       [[ -n "$pin" ]] || return 1
       body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0 \
-                   --resolve "$pin" "$final" 2>/dev/null || true)"
+                   --noproxy '*' --resolve "$pin" "$final" 2>/dev/null || true)"
       # cPanel/Webmail login markers. Kept broad on purpose: a false positive
       # costs one manual look, a false negative costs a mailbox.
       if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
