@@ -36,6 +36,7 @@ TIMEOUT="${TIMEOUT:-20}"
 MAX_HOPS="${MAX_HOPS:-5}"
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 2; }
+command -v dig  >/dev/null 2>&1 || { echo "error: dig not found (install bind9-dnsutils)" >&2; exit 2; }
 
 # Subdomains worth probing. webmail/cpanel/mail/ftp are cPanel proxy subdomains:
 # a shared-hosting box answers them whether or not our account still lives there,
@@ -87,11 +88,17 @@ on_estate() {
 # must not be in private, loopback, link-local or CGNAT space. Bounded by
 # MAX_HOPS so a redirect loop cannot hang the job.
 #
-# Honest limit: this validates the address curl actually connected to, reported
-# by %{remote_ip} after the fact. It is not a DNS-rebinding defence — nothing
-# short of pinning the resolved address into the connection is. It closes the
-# open-redirect-into-private-space path, which is the one a dangling estate
-# hostname creates.
+# Why the peer check alone was NOT enough, and what replaced it: `%{remote_ip}`
+# is only populated AFTER curl has sent the request, so validating it rejected a
+# private peer one request too late — the connection to the private service had
+# already happened. Validation therefore has to precede the connection, and the
+# approved address has to be PINNED into it, or DNS can answer differently
+# between the check and the connect (TOCTOU / DNS rebinding).
+#
+# So every hop now goes: resolve -> validate EVERY answer -> pin the approved
+# address with `curl --resolve host:port:addr`. curl then cannot connect
+# anywhere else, whatever DNS says next. The `%{remote_ip}` check is kept below
+# purely as an assertion that the pin was honoured.
 
 is_private_ip() {
   case "$1" in
@@ -104,21 +111,87 @@ is_private_ip() {
   return 1
 }
 
-# walk_redirects URL -> sets WALK_CODE, WALK_FINAL, WALK_BLOCKED
+# url_host_port URL -> sets URL_HOST, URL_PORT. Returns 1 if there is no host.
+# Needed because --resolve is keyed on host AND port, so the port has to be the
+# one curl will actually use, not an assumed 443.
+url_host_port() {
+  local rest="${1#https://}"
+  URL_HOST=""; URL_PORT=""
+  rest="${rest%%/*}"          # drop path
+  rest="${rest%%\?*}"         # drop query on a path-less URL
+  rest="${rest%%#*}"          # drop fragment
+  rest="${rest##*@}"          # drop userinfo — the host is AFTER the last @
+  case "$rest" in
+    \[*\]:*) URL_HOST="${rest%%\]:*}"; URL_HOST="${URL_HOST#\[}"
+             URL_PORT="${rest##*\]:}" ;;
+    \[*\])   URL_HOST="${rest#\[}";    URL_HOST="${URL_HOST%\]}"
+             URL_PORT="443" ;;
+    *:*)     URL_HOST="${rest%%:*}";   URL_PORT="${rest##*:}" ;;
+    *)       URL_HOST="$rest";         URL_PORT="443" ;;
+  esac
+  [[ -n "$URL_HOST" && "$URL_PORT" =~ ^[0-9]+$ ]] || return 1
+  return 0
+}
+
+# resolve_public HOST -> sets RESOLVE_IP, RESOLVE_BLOCKED. Returns:
+#   0  resolved, every answer is public; RESOLVE_IP is the address to pin
+#   1  no address at all — the caller reports this as 000, not as a refusal,
+#      and CRUCIALLY makes no HTTP request
+#   2  refused; RESOLVE_BLOCKED says which answer was private
+#
+# EVERY answer is checked, not just the one we pin. A resolver that returns a
+# public address first and a private one second would otherwise leave a private
+# address reachable on any retry or by reordering.
+resolve_public() {
+  local host="$1" ip answers
+  RESOLVE_IP=""; RESOLVE_BLOCKED=""
+  answers="$( { dig +short +time=5 +tries=2 "$host" A
+                dig +short +time=5 +tries=2 "$host" AAAA; } 2>/dev/null \
+              | grep -v '\.$' || true )"
+  [[ -n "$answers" ]] || return 1
+  for ip in $answers; do
+    if is_private_ip "$ip"; then
+      RESOLVE_BLOCKED="refused: $host resolves to private address $ip"
+      return 2
+    fi
+  done
+  RESOLVE_IP="$(head -1 <<< "$answers")"
+  return 0
+}
+
+# walk_redirects URL -> sets WALK_CODE, WALK_FINAL, WALK_BLOCKED, WALK_PIN
 #   WALK_BLOCKED non-empty  => the chain was refused, and why
 #   WALK_CODE 000           => the hostname did not answer at all
+#   WALK_PIN                => the --resolve pin used for WALK_FINAL, so a
+#                              caller can re-fetch that exact URL without
+#                              resolving it a second time
 walk_redirects() {
-  local url="$1" hop=0 code ip redir
-  WALK_CODE="000"; WALK_FINAL="$url"; WALK_BLOCKED=""
+  local url="$1" hop=0 code ip redir rc
+  WALK_CODE="000"; WALK_FINAL="$url"; WALK_BLOCKED=""; WALK_PIN=""
   while :; do
     case "$url" in
       https://*) ;;
       *) WALK_BLOCKED="refused non-https hop: $url"; return 1 ;;
     esac
+    if ! url_host_port "$url"; then
+      WALK_BLOCKED="refused unparseable hop: $url"; return 1
+    fi
+    resolve_public "$URL_HOST"; rc=$?
+    if [[ "$rc" -eq 2 ]]; then
+      WALK_BLOCKED="$RESOLVE_BLOCKED (hop: $url)"; return 1
+    fi
+    if [[ "$rc" -eq 1 ]]; then
+      # No address: nothing to connect to, and nothing was connected to.
+      WALK_CODE="000"; return 0
+    fi
+    WALK_PIN="$URL_HOST:$URL_PORT:$RESOLVE_IP"
     read -r code ip redir < <(curl -sS -o /dev/null --max-time "$TIMEOUT" \
-        --proto '=https' --max-redirs 0 \
+        --proto '=https' --max-redirs 0 --resolve "$WALK_PIN" \
         -w '%{http_code} %{remote_ip} %{redirect_url}' "$url" 2>/dev/null \
         || echo "000 - -")
+    # Assertion, not the defence. The pin above is the defence; this can only
+    # fire if --resolve was ignored, so if it ever does, something is wrong
+    # with the tool rather than with the hostname.
     if [[ -n "$ip" && "$ip" != "-" ]] && is_private_ip "$ip"; then
       WALK_BLOCKED="refused hop into private space: $url -> $ip"
       return 1
@@ -145,16 +218,18 @@ walk_redirects() {
 LOGIN_PREFIXES="webmail cpanel webdisk whm"
 
 login_surface() {
-  local host="$1" code="$2" final="$3" prefix body
+  local host="$1" code="$2" final="$3" pin="$4" prefix body
   [[ "$code" == "200" ]] || return 1
   for prefix in $LOGIN_PREFIXES; do
     if [[ "$host" == "$prefix."* ]]; then
-      # $final is the last URL of a chain the caller already walked hop by hop,
-      # so its scheme and peer address are already validated. Fetch it directly
-      # rather than walking again: a second walk doubles the requests and
-      # clobbers the WALK_* globals the caller is still holding.
+      # Reuse the caller's pin rather than resolving $final again. An
+      # independent second resolution was the defect here: the address
+      # validated during the walk could be replaced by a private one before
+      # this fetch. With the pin there is no second resolution to poison.
+      # No pin means the caller never validated this URL, so refuse to fetch.
+      [[ -n "$pin" ]] || return 1
       body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0 \
-                   "$final" 2>/dev/null || true)"
+                   --resolve "$pin" "$final" 2>/dev/null || true)"
       # cPanel/Webmail login markers. Kept broad on purpose: a false positive
       # costs one manual look, a false negative costs a mailbox.
       if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
@@ -181,7 +256,7 @@ for h in "${HOSTS[@]}"; do
     FINDINGS=$((FINDINGS + 1))
     continue
   fi
-  code="$WALK_CODE"; final="$WALK_FINAL"
+  code="$WALK_CODE"; final="$WALK_FINAL"; pin="$WALK_PIN"
 
   # A hostname that does not resolve or does not answer is not a finding. The
   # danger is a hostname that answers and sends the visitor somewhere else.
@@ -191,7 +266,7 @@ for h in "${HOSTS[@]}"; do
   fi
 
   if on_estate "$final"; then
-    if login_surface "$h" "$code" "$final"; then
+    if login_surface "$h" "$code" "$final" "$pin"; then
       printf '  %-34s %s LOGIN FORM served here\n' "$h" "$code"
       FINDINGS=$((FINDINGS + 1))
     else

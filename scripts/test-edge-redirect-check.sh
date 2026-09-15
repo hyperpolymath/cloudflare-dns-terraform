@@ -63,10 +63,10 @@ bad()  { printf 'FAIL %s\n       %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
 # vacuously — the exact absence-shaped failure this incident kept producing — so
 # the extraction is itself asserted before anything is run.
 
-sed -n '/^is_private_ip() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p' \
+sed -n '/^is_private_ip() {$/,/^}$/p; /^url_host_port() {$/,/^}$/p; /^resolve_public() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p' \
     "$SUT" > "$WORK/sut.bash"
 
-for fn in is_private_ip walk_redirects login_surface; do
+for fn in is_private_ip url_host_port resolve_public walk_redirects login_surface; do
   grep -q "^${fn}() {$" "$WORK/sut.bash" \
     || { echo "preflight: did not extract ${fn}() from $SUT" >&2; exit 2; }
 done
@@ -93,6 +93,13 @@ echo "$n" > "$STUB_COUNT"
 # each its own shape, or the body controls silently measure the walk's output
 # instead of a page. An unset STUB_BODY fails LOUDLY rather than defaulting: a
 # stub with a permissive default cannot report that it was never configured.
+# Record every --resolve pin, so a control can assert the connection was PINNED
+# to the validated address rather than merely that the address was validated.
+prev=""
+for a in "$@"; do
+  [[ "$prev" == "--resolve" ]] && echo "$a" >> "$STUB_RESOLVE"
+  prev="$a"
+done
 has_w=0
 for a in "$@"; do [[ "$a" == "-w" ]] && has_w=1; done
 if [[ "$has_w" == 0 ]]; then
@@ -118,8 +125,41 @@ case "${STUB_MODE:-ok200}" in
 esac
 STUB
 chmod +x "$WORK/bin/curl"
+
+# --- A scripted dig, so every RESOLUTION is ours too --------------------------
+#
+# Resolution now happens BEFORE any request, which is the whole point of the
+# fix. That makes dig part of the system under test: without a stub these
+# controls would resolve real names on the network, and the private-address
+# cases could not be expressed at all.
+#
+# dig is called as `dig +short +time=5 +tries=2 <host> <TYPE>`, so the record
+# type is the last argument.
+cat > "$WORK/bin/dig" <<'DSTUB'
+#!/usr/bin/env bash
+n=$(( $(cat "$DIG_COUNT" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$DIG_COUNT"
+rtype="${!#}"
+case "${STUB_DIG:-public}" in
+  public)   [[ "$rtype" == "A" ]] && echo "203.0.113.10" ;;
+  private)  [[ "$rtype" == "A" ]] && echo "10.0.0.5" ;;
+  # A public answer FIRST and a private one second: the case that a
+  # check-only-the-pinned-address implementation would wave through.
+  mixed)    [[ "$rtype" == "A" ]] && { echo "203.0.113.10"; echo "192.168.1.9"; } ;;
+  # dig +short prints CNAME targets as trailing-dot lines before the address.
+  cname)    [[ "$rtype" == "A" ]] && { echo "target.example.com."; echo "203.0.113.10"; } ;;
+  # Public A, private AAAA — refused only if AAAA is looked at at all.
+  v6priv)   if [[ "$rtype" == "A" ]]; then echo "203.0.113.10"; else echo "fd00::1"; fi ;;
+  none)     : ;;
+  *) echo "stub: unknown STUB_DIG '${STUB_DIG}'" >&2; exit 96 ;;
+esac
+exit 0
+DSTUB
+chmod +x "$WORK/bin/dig"
 export PATH="$WORK/bin:$PATH"
 export STUB_COUNT="$WORK/calls"
+export STUB_RESOLVE="$WORK/pins"
+export DIG_COUNT="$WORK/digs"
 
 # shellcheck disable=SC2034  # both are read by the functions sourced below
 TIMEOUT=20
@@ -131,8 +171,19 @@ source "$WORK/sut.bash"
 # below is measuring the real network instead of the scenario.
 [[ "$(command -v curl)" == "$WORK/bin/curl" ]] \
   || { echo "preflight: stub curl is not on PATH first" >&2; exit 2; }
+[[ "$(command -v dig)" == "$WORK/bin/dig" ]] \
+  || { echo "preflight: stub dig is not on PATH first" >&2; exit 2; }
 
-run_walk() { export STUB_MODE="$1"; : > "$STUB_COUNT"; walk_redirects "$2"; }
+# STUB_DIG is the third argument, defaulting to a public answer, so every
+# control written before resolution existed keeps its old meaning. Both
+# counters are reset here: a control that asserts "zero requests" is only
+# meaningful if the count started at zero.
+run_walk() {
+  export STUB_MODE="$1"
+  export STUB_DIG="${3:-public}"
+  : > "$STUB_COUNT"; : > "$STUB_RESOLVE"; : > "$DIG_COUNT"
+  walk_redirects "$2"
+}
 
 echo "--- is_private_ip: addresses that MUST be refused"
 for ip in 10.0.0.1 127.0.0.1 0.0.0.0 169.254.1.1 192.168.1.1 \
@@ -232,7 +283,14 @@ echo "--- login_surface"
 # never been evidence about this code at all — which is exactly the shape of
 # fault this whole workflow exists to prevent.
 
-run_login() { export STUB_BODY="$1"; : > "$STUB_COUNT"; login_surface "$2" "$3" "$4"; }
+# The 4th argument is the caller's --resolve pin. login_surface refuses to
+# fetch without one (that refusal is control 23), so every control that means
+# to exercise the body fetch has to supply it.
+run_login() {
+  export STUB_BODY="$1"
+  : > "$STUB_COUNT"; : > "$DIG_COUNT"
+  login_surface "$2" "$3" "$4" "${5:-webmail.example.com:443:203.0.113.10}"
+}
 
 # 8a-8d. One control per marker in the detection regex, each fixture matching
 #        exactly ONE alternative. A single fixture that matched several would
@@ -271,6 +329,7 @@ fi
 #     unset so a stray fetch also fails loudly instead of being served a page.
 unset STUB_BODY; : > "$STUB_COUNT"
 if ! login_surface "webmail.example.com" 301 "https://webmail.example.com/" \
+     "webmail.example.com:443:203.0.113.10" \
    && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
   ok "does not fetch a body for a non-200 response"
 else
@@ -280,10 +339,169 @@ fi
 # 12. A hostname outside LOGIN_PREFIXES is never body-fetched either.
 unset STUB_BODY; : > "$STUB_COUNT"
 if ! login_surface "www.example.com" 200 "https://www.example.com/" \
+     "www.example.com:443:203.0.113.10" \
    && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
   ok "does not fetch a body for a host outside LOGIN_PREFIXES"
 else
   bad "does not fetch a body outside LOGIN_PREFIXES" "calls='$(cat "$STUB_COUNT")'"
+fi
+
+echo
+echo "--- resolution: validated BEFORE the connection, and PINNED into it"
+
+# 13. THE CONTROL THIS COMMIT EXISTS FOR. A private DNS answer must cause ZERO
+#     http requests. The previous version validated `%{remote_ip}`, which curl
+#     only populates AFTER the request has been sent — so it rejected a private
+#     peer one request too late, when the connection to the private service had
+#     already been made. Asserting the refusal REASON alone still passes against
+#     that version; only the request count tells the two apart.
+if ! run_walk ok200 "https://rebind.example.com/" private \
+   && [[ "$WALK_BLOCKED" == *"private address"* ]] \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "a private DNS answer causes NO http request at all"
+else
+  bad "a private DNS answer causes no http request" \
+      "blocked='${WALK_BLOCKED:-}' calls='$(cat "$STUB_COUNT")'"
+fi
+
+# 14. EVERY answer is checked, not just the one that gets pinned. A resolver
+#     answering public-then-private would otherwise leave the private address
+#     reachable on a retry or a reordering.
+if ! run_walk ok200 "https://mixed.example.com/" mixed \
+   && [[ "$WALK_BLOCKED" == *"192.168.1.9"* ]] \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "refuses when ANY answer is private, not just the first"
+else
+  bad "refuses when any answer is private" \
+      "blocked='${WALK_BLOCKED:-}' calls='$(cat "$STUB_COUNT")'"
+fi
+
+# 15. AAAA is looked at too. A v4-only check passes a host whose v6 answer is
+#     private, and curl prefers v6 wherever it has one.
+if ! run_walk ok200 "https://v6.example.com/" v6priv \
+   && [[ "$WALK_BLOCKED" == *"fd00::1"* ]]; then
+  ok "refuses a private AAAA answer"
+else
+  bad "refuses a private AAAA answer" "blocked='${WALK_BLOCKED:-}'"
+fi
+
+# 16. A name with no address is 'no answer' (000), never a refusal — and again
+#     with no request made, because there was nothing to connect to. The two
+#     outcomes mean different things to whoever reads the report.
+if run_walk ok200 "https://nxdomain.example.com/" none \
+   && [[ "$WALK_CODE" == "000" && -z "$WALK_BLOCKED" ]] \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "a name with no address is 000, not a refusal, and makes no request"
+else
+  bad "a name with no address is 000" \
+      "code='${WALK_CODE:-}' blocked='${WALK_BLOCKED:-}' calls='$(cat "$STUB_COUNT")'"
+fi
+
+# 17. `dig +short` prints CNAME targets as trailing-dot lines ahead of the
+#     address. Those are not addresses: one fed to is_private_ip reads as
+#     public, and pinning it would hand curl a hostname to resolve again —
+#     undoing the pin entirely.
+if run_walk ok200 "https://aliased.example.com/" cname \
+   && [[ "$WALK_CODE" == "200" && -z "$WALK_BLOCKED" ]] \
+   && [[ "$(cat "$STUB_RESOLVE")" == "aliased.example.com:443:203.0.113.10" ]]; then
+  ok "strips CNAME lines and pins the address, not the alias"
+else
+  bad "strips CNAME lines and pins the address" \
+      "code='${WALK_CODE:-}' pin='$(cat "$STUB_RESOLVE")' blocked='${WALK_BLOCKED:-}'"
+fi
+
+# 18. VALIDATION IS NOT THE DEFENCE ON ITS OWN: the approved address has to be
+#     PINNED into the connection, or DNS can answer differently between the
+#     check and the connect (TOCTOU / DNS rebinding). This asserts the pin
+#     actually reached curl.
+run_walk ok200 "https://pinned.example.com/" public
+if [[ "$(cat "$STUB_RESOLVE")" == "pinned.example.com:443:203.0.113.10" ]]; then
+  ok "the validated address is pinned into the connection with --resolve"
+else
+  bad "the validated address is pinned into the connection" \
+      "recorded pins: '$(cat "$STUB_RESOLVE")'"
+fi
+
+# 19. --resolve is keyed on host AND port, so a non-443 URL must pin its own
+#     port. A pin naming 443 for a :9443 URL simply never applies, and curl
+#     resolves normally — the defence disappears without any error.
+run_walk ok200 "https://odd.example.com:9443/" public
+if [[ "$(cat "$STUB_RESOLVE")" == "odd.example.com:9443:203.0.113.10" ]]; then
+  ok "pins the port the URL actually uses, not an assumed 443"
+else
+  bad "pins the port the URL actually uses" "recorded pins: '$(cat "$STUB_RESOLVE")'"
+fi
+
+echo
+echo "--- url_host_port"
+
+# 20. Parsing controls, for the same reason as 19: a parse error here does not
+#     fail loudly, it produces a pin that never matches. The userinfo cases are
+#     the ones that matter for safety — the host is what follows the LAST '@',
+#     and reading the userinfo as the host would pin an attacker-chosen name
+#     while curl connected to the real one.
+while read -r url want_host want_port; do
+  if url_host_port "$url" \
+     && [[ "$URL_HOST" == "$want_host" && "$URL_PORT" == "$want_port" ]]; then
+    ok "parses $url -> $want_host:$want_port"
+  else
+    bad "parses $url" "got '${URL_HOST:-}':'${URL_PORT:-}', want '$want_host':'$want_port'"
+  fi
+done <<'CASES'
+https://a.example.com/ a.example.com 443
+https://a.example.com:8443/x?y=1 a.example.com 8443
+https://[2001:db8::1]/ 2001:db8::1 443
+https://[2001:db8::1]:8443/ 2001:db8::1 8443
+https://user:pw@real.example.com/ real.example.com 443
+https://evil.example.com@real.example.com/ real.example.com 443
+CASES
+
+# 21. A URL with no host is refused rather than yielding an empty pin.
+if ! url_host_port "https:///path"; then
+  ok "refuses a URL with no host"
+else
+  bad "refuses a URL with no host" "accepted, host='${URL_HOST:-}'"
+fi
+
+echo
+echo "--- login_surface does not resolve a second time"
+
+# 22. The other half of the SSRF finding, and it was MY defect: the body fetch
+#     re-resolved the final URL independently, so an address validated during
+#     the walk could be replaced by a private one before the body was fetched.
+#     It now reuses the caller's pin, so it must make NO dig call of its own.
+run_login m_webmail "webmail.example.com" 200 "https://webmail.example.com/" || true
+if [[ "$(cat "$DIG_COUNT")" == "" ]]; then
+  ok "login_surface performs no second DNS resolution"
+else
+  bad "login_surface performs no second DNS resolution" \
+      "made $(cat "$DIG_COUNT") dig call(s) — the pin is being bypassed"
+fi
+
+# 23. With no pin it refuses outright rather than fetching something nobody
+#     validated. This is what makes controls 11 and 12 honest: they now pass a
+#     pin, so they still fail for the reason they claim.
+: > "$STUB_COUNT"
+if ! login_surface "webmail.example.com" 200 "https://webmail.example.com/" "" \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "refuses to fetch a body with no pin from the caller"
+else
+  bad "refuses to fetch a body with no pin" "calls='$(cat "$STUB_COUNT")'"
+fi
+
+# 24. And the body fetch itself must carry the pin. Control 22 proves
+#     login_surface does not call `dig`; it does NOT prove the pin is used,
+#     because curl re-resolves internally where the dig stub cannot see it.
+#     Dropping `--resolve` from this one curl restores the original defect
+#     verbatim and is invisible to every other control here.
+: > "$STUB_RESOLVE"
+run_login m_webmail "webmail.example.com" 200 "https://webmail.example.com/" \
+    "webmail.example.com:443:203.0.113.10" || true
+if [[ "$(cat "$STUB_RESOLVE")" == "webmail.example.com:443:203.0.113.10" ]]; then
+  ok "the body fetch is pinned to the caller's validated address"
+else
+  bad "the body fetch is pinned to the caller's validated address" \
+      "recorded pins: '$(cat "$STUB_RESOLVE")'"
 fi
 
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"
