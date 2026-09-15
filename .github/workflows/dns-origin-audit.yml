@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+#
+# Catches dangling DNS before a visitor does.
+#
+# Every previous instance of the jewell.nexus redirect was discovered by a
+# family member noticing it on LinkedIn, weeks after it started. This is the
+# missing feedback loop: it asks the same questions every morning.
+#
+# THREE JOBS, ON PURPOSE — one gate, one question.
+#
+#   dns-origins  Is any record aimed at a server we do not control?  THE INCIDENT.
+#   ssl-mode     Is every zone on Full (strict)?                     A PROGRAMME.
+#   edge         Does any hostname send a visitor off-estate?        Needs no token.
+#
+# `ssl-mode` is expected to be RED until every zone has an origin certificate
+# minted and installed, which is owner work across 36 zones. If it shared an
+# exit code with `dns-origins`, the incident check could never go green, and a
+# gate that is always red stops being read. They are separate so each one's
+# colour means exactly one thing.
+#
+# `dns-origins` and `ssl-mode` both go red while CLOUDFLARE_API_TOKEN is unset.
+# That is deliberate: a missing credential must fail loudly, never quietly pass.
+name: DNS Origin Audit
+
+permissions: {}
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily, shortly after 06:00 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - 'allowed-origins.txt'
+      - 'scripts/dns-origin-audit.sh'
+      - 'scripts/edge-redirect-check.sh'
+      - 'scripts/test-dns-origin-audit.sh'
+      - 'scripts/test-edge-redirect-check.sh'
+      - '.github/workflows/dns-origin-audit.yml'
+
+jobs:
+  # Proves the detector still detects, before trusting either job below.
+  # Runs first and needs no credentials.
+  self-test:
+    name: Self-test the audit against a mock API
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4
+      - name: Install jq and dig
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq dnsutils
+      # A suite CI cannot EXECUTE is not a gate. This job invokes each script as
+      # `./scripts/...`, so a script committed without the executable bit dies
+      # with "Permission denied" (exit 126) before running a single control —
+      # and it dies that way ONLY in CI, because running `bash scripts/foo.sh`
+      # locally never consults the mode bit at all. That is exactly how
+      # test-edge-redirect-check.sh reached this branch at 100644 with its 56
+      # controls passing on the author's machine and never once running here.
+      #
+      # The count assertion is not padding: `git ls-files scripts/*.sh` matching
+      # nothing would make the loop body never execute and the step pass green,
+      # which is the same "the detect step is the real gate" fault this whole
+      # workflow exists to catch.
+      - name: Every script this job runs is executable in git
+        run: |
+          set -euo pipefail
+          n=0; bad=0
+          while read -r mode _ _ path; do
+            n=$((n + 1))
+            printf '%s  %s\n' "$mode" "$path"
+            [[ "$mode" == "100755" ]] || { echo "::error file=$path::committed $mode, must be 100755 — CI runs it as ./$path"; bad=$((bad + 1)); }
+          done < <(git ls-files -s -- 'scripts/*.sh')
+          echo "scripts checked: $n, non-executable: $bad"
+          [[ "$n" -ge 4 ]] || { echo "::error::expected at least 4 scripts, found $n — the glob matched nothing useful, so this check proved nothing"; exit 1; }
+          [[ "$bad" -eq 0 ]] || exit 1
+      - name: Run the scope and detection controls
+        run: ./scripts/test-dns-origin-audit.sh
+
+      # The redirect follower has its own suite because it has its own
+      # failure mode: a version that refuses everything is "secure" and
+      # detects nothing, which is the fault this whole workflow exists to
+      # prevent. Hermetic — curl is stubbed, no network, no credential.
+      - name: Run the redirect-follower controls
+        run: ./scripts/test-edge-redirect-check.sh
+
+  # THE INCIDENT. Reads the true origin of every record in every zone — the
+  # check that sees through the proxy, because a proxied record's public A
+  # record shows Cloudflare addresses and hides where the edge really fetches.
+  dns-origins:
+    name: No record aimed at a server we do not control
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: self-test
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4
+      - name: Install jq and dig
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq dnsutils
+      - name: Audit record origins across all zones
+        env:
+          AUDIT_SCOPE: origins
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ALLOWED_ORIGIN_IPS: ${{ secrets.ALLOWED_ORIGIN_IPS }}
+        run: ./scripts/dns-origin-audit.sh
+
+  # THE PROGRAMME (R-F). Expected red until the 36-zone certificate work is
+  # done. Do not silence it, and do not fold it back into the job above.
+  ssl-mode:
+    name: Every zone on Full (strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: self-test
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4
+      - name: Install jq
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+      - name: Check SSL/TLS mode on every zone
+        env:
+          AUDIT_SCOPE: ssl
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: ./scripts/dns-origin-audit.sh
+
+  # Asks the question a visitor asks. Needs no credentials, so this one keeps
+  # answering even when the token is missing or expired.
+  edge:
+    name: No hostname sends a visitor off-estate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4
+      - name: Install dig
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils
+      - name: Check no hostname sends visitors off-estate
+        run: ./scripts/edge-redirect-check.sh

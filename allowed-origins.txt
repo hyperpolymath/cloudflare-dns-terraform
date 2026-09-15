@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+#
+# allowed-origins.txt — the origins this estate is allowed to point DNS at.
+# Consumed by scripts/dns-origin-audit.sh. Anything not listed here is a finding.
+#
+# WHY: on 2026-09-08 several jewell.nexus records were still aimed at a
+# shared-hosting IP the cPanel account had been migrated off. That box answers
+# every unmatched hostname with a redirect to whichever customer is now its
+# default vhost, so visitors to those subdomains were sent to an unrelated
+# third-party site. Nothing was compromised. The records were simply
+# pointing at a stranger.
+# An explicit allow-list makes that state impossible to hold silently.
+#
+# FORMAT (one per line)
+#   ip     <address>    an origin server address we control today
+#   suffix <domain>     a CNAME/MX/NS target suffix we trust
+#   deny   <address>    known-dead; always reported, never tolerated
+#
+# ------------------------------------------------------------------------
+# DENY — the dead shared-hosting box behind the 2026-09 incident.
+# rDNS s4936.fra1.stableserver.net, WHG Hosting Services Ltd (World Host Group),
+# Frankfurt. Our account no longer exists on it: the certificate it presents for
+# our hostnames is a stranger's. Nothing of ours may ever point here again.
+deny 65.181.113.13
+
+# ------------------------------------------------------------------------
+# IP — current origin servers.
+#
+# TO FILL IN: Verpex WHM -> List Accounts shows the server IP for each of the
+# 33 reseller cPanel accounts. Add one "ip" line per distinct address. Until
+# these are present the audit will report every A record, which is the correct
+# behaviour for an allow-list that has not yet been told what is legitimate.
+# Do not shortcut this by adding a broad range; the whole point is that a
+# recycled neighbour IP must not be tolerated.
+
+# ⚠ THIS REPOSITORY IS PUBLIC. Origin server addresses are deliberately NOT
+# listed here. Publishing them would defeat the point of Cloudflare proxying,
+# which exists to keep the origin unreachable except through the edge.
+#
+# 'ip' entries therefore live in the repository secret ALLOWED_ORIGIN_IPS,
+# which scripts/dns-origin-audit.sh reads in addition to this file. Set it to
+# a whitespace- or comma-separated list of the current origin addresses from
+# Verpex WHM -> List Accounts (one per distinct address across the 33 reseller
+# cPanel accounts). Do not shortcut this with a broad range: the whole point
+# is that a recycled neighbour IP must not be tolerated.
+#
+# Known to belong in that secret today (2026-09-14): the cPanel box carrying
+# the apex and the two mail domains that must stay unproxied for SMTP. Its
+# origin certificate EXPIRED Aug 19 2026, which is why Full (strict) cannot be
+# switched on until a Cloudflare Origin CA cert is installed (plan step 1.2a).
+
+# The other 32 reseller accounts are still unlisted — see plan step 2.4 (ask
+# Verpex WHM -> List Accounts). Until they are here the audit reports their A
+# records, which is correct for an allow-list not yet told what is legitimate.
+
+# ------------------------------------------------------------------------
+# SUFFIX — hosted platforms we deploy to. These have no IP for us to leave
+# dangling, which is exactly why the plan moves sites onto them.
+suffix github.io
+suffix pages.dev
+suffix workers.dev
+suffix ns.cloudflare.com
