@@ -35,6 +35,7 @@ on:
       - 'scripts/dns-origin-audit.sh'
       - 'scripts/edge-redirect-check.sh'
       - 'scripts/test-dns-origin-audit.sh'
+      - 'scripts/test-edge-redirect-check.sh'
       - '.github/workflows/dns-origin-audit.yml'
 
 jobs:
@@ -53,6 +54,30 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq dnsutils
+      # A suite CI cannot EXECUTE is not a gate. This job invokes each script as
+      # `./scripts/...`, so a script committed without the executable bit dies
+      # with "Permission denied" (exit 126) before running a single control —
+      # and it dies that way ONLY in CI, because running `bash scripts/foo.sh`
+      # locally never consults the mode bit at all. That is exactly how
+      # test-edge-redirect-check.sh reached this branch at 100644 with its 56
+      # controls passing on the author's machine and never once running here.
+      #
+      # The count assertion is not padding: `git ls-files scripts/*.sh` matching
+      # nothing would make the loop body never execute and the step pass green,
+      # which is the same "the detect step is the real gate" fault this whole
+      # workflow exists to catch.
+      - name: Every script this job runs is executable in git
+        run: |
+          set -euo pipefail
+          n=0; bad=0
+          while read -r mode _ _ path; do
+            n=$((n + 1))
+            printf '%s  %s\n' "$mode" "$path"
+            [[ "$mode" == "100755" ]] || { echo "::error file=$path::committed $mode, must be 100755 — CI runs it as ./$path"; bad=$((bad + 1)); }
+          done < <(git ls-files -s -- 'scripts/*.sh')
+          echo "scripts checked: $n, non-executable: $bad"
+          [[ "$n" -ge 4 ]] || { echo "::error::expected at least 4 scripts, found $n — the glob matched nothing useful, so this check proved nothing"; exit 1; }
+          [[ "$bad" -eq 0 ]] || exit 1
       - name: Run the scope and detection controls
         run: ./scripts/test-dns-origin-audit.sh
 
