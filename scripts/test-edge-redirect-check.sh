@@ -63,10 +63,11 @@ bad()  { printf 'FAIL %s\n       %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
 # vacuously — the exact absence-shaped failure this incident kept producing — so
 # the extraction is itself asserted before anything is run.
 
-sed -n '/^is_ip_literal() {$/,/^}$/p; /^is_private_ip() {$/,/^}$/p; /^url_host_port() {$/,/^}$/p; /^resolve_public() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p; /^DNS_FALLBACKS=/p' \
+sed -n '/^is_ip_literal() {$/,/^}$/p; /^is_private_ip() {$/,/^}$/p; /^url_host_port() {$/,/^}$/p; /^resolve_public() {$/,/^}$/p; /^walk_redirects() {$/,/^}$/p; /^host_of_url() {$/,/^}$/p; /^is_approved_login_host() {$/,/^}$/p; /^load_approved_login_hosts() {$/,/^}$/p; /^login_surface() {$/,/^}$/p; /^LOGIN_PREFIXES=/p; /^DNS_FALLBACKS=/p' \
     "$SUT" > "$WORK/sut.bash"
 
-for fn in is_ip_literal is_private_ip url_host_port resolve_public walk_redirects login_surface; do
+for fn in is_ip_literal is_private_ip url_host_port resolve_public walk_redirects \
+          host_of_url is_approved_login_host load_approved_login_hosts login_surface; do
   grep -q "^${fn}() {$" "$WORK/sut.bash" \
     || { echo "preflight: did not extract ${fn}() from $SUT" >&2; exit 2; }
 done
@@ -135,6 +136,20 @@ case "${STUB_MODE:-ok200}" in
   loop)      echo "301 203.0.113.10 https://next-${n}.example.com/" ;;
   onehop)    if [[ "$n" == 1 ]]; then echo "301 203.0.113.10 https://final.example.com/"
              else echo "200 203.0.113.11"; fi ;;
+  # A chain that MOVES HOST, which is the situation #43 is about, and the two
+  # directions of it. The probe host and the landing host are set here; the page
+  # served at the landing host is whatever STUB_BODY names, so a control can pair
+  # "landed on a cPanel name" with "and that name serves a login form" and get
+  # both halves of the defect in one run.
+  to_webmail) if [[ "$n" == 1 ]]; then echo "301 203.0.113.10 https://webmail.example.com/"
+              else echo "200 203.0.113.11"; fi ;;
+  to_www)    if [[ "$n" == 1 ]]; then echo "301 203.0.113.10 https://www.example.com/"
+              else echo "200 203.0.113.11"; fi ;;
+  # The same landing host as to_webmail, spelled the way a Location header is
+  # allowed to spell it. Hostnames are case-insensitive; a comparison between the
+  # judged host and the pin that is not, refuses to fetch and reports nothing.
+  to_webmail_mixed) if [[ "$n" == 1 ]]; then echo "301 203.0.113.10 https://Webmail.Example.COM/"
+                      else echo "200 203.0.113.11"; fi ;;
   *) echo "stub: unknown STUB_MODE '${STUB_MODE:-}'" >&2; exit 99 ;;
 esac
 STUB
@@ -205,6 +220,14 @@ export DIG_COUNT="$WORK/digs"
 # shellcheck disable=SC2034  # both are read by the functions sourced below
 TIMEOUT=20
 MAX_HOPS=5
+# Where the approved-login-host policy is read from. The suite does NOT source
+# the script's own default: `${VAR:-$REPO_ROOT/...}` would expand REPO_ROOT,
+# which is unset here under `set -u`, so the suite sets the path it means to
+# test — and every control that is not about the policy runs against a path that
+# does not exist, which is the ABSENT-FILE case (approves nothing) rather than a
+# case nobody chose.
+APPROVED_LOGIN_HOSTS_FILE="$WORK/no-such-approved-login-hosts.txt"
+APPROVED_LOGIN_HOSTS=()
 # shellcheck source=/dev/null
 source "$WORK/sut.bash"
 
@@ -545,7 +568,6 @@ else
       "recorded pins: '$(cat "$STUB_RESOLVE")'"
 fi
 
-
 # --- A dig diagnostic is not a DNS answer ------------------------------------
 #
 # 25. `dig +short` writes its own diagnostics to STDOUT. The previous filter was
@@ -668,6 +690,354 @@ if [[ "$np_total" -ge 2 && "$np_ok" == "$np_total" \
 else
   bad "every curl invocation refuses proxies, on both call sites" \
       "$np_ok of $np_total invocation(s) carried --noproxy '*' (walk=$np_walk body=$np_body); recorded: $(sort "$STUB_NOPROXY" | uniq -c | tr '\n' ';')"
+fi
+
+# 33. The pin has to belong to the URL being fetched. A pin built for one host
+#     handed to a fetch of another means the request goes out through an address
+#     validated for something else — the same guard/consumer mismatch as #43, one
+#     layer down, so it is refused rather than trusted.
+unset STUB_BODY; : > "$STUB_COUNT"
+if ! login_surface "webmail.example.com" 200 "https://webmail.example.com/" \
+       "www.example.com:443:203.0.113.10" \
+   && [[ "$(cat "$STUB_COUNT")" == "" ]]; then
+  ok "refuses to fetch through a pin that belongs to a different host"
+else
+  bad "refuses to fetch through a pin that belongs to a different host" \
+      "calls='$(cat "$STUB_COUNT")'"
+fi
+
+
+# --- #43: the host that is judged is the host that is fetched -----------------
+#
+# #43 was the prefix test reading the PROBE host while the body fetch read the
+# FINAL URL. The two directions of that mismatch lead to opposite faults, so
+# there is one control each. `verdict` runs the walk and then the login decision
+# the way the report loop does, so what is measured is the pairing, not either
+# half of it:
+#
+#   a chain www. -> webmail.  must be FETCHED and reported   (a credential
+#                             surface reached by redirect used to be skipped)
+#   a chain webmail. -> www.  must NOT be fetched or judged  (a homepage used to
+#                             be matched against login markers)
+#
+# Both controls pass STUB_BODY=m_webmail, a page that DOES match the markers, so
+# a stray fetch anywhere in the scenario changes the verdict rather than passing
+# unnoticed. `calls=` is reported because the request count is what separates
+# "decided not to look" from "looked and found nothing" — the distinction this
+# whole estate keeps relearning.
+
+verdict() {
+  ( set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$1"
+    # EVERY scenario variable is set here, including the resolver: these are
+    # exported for the whole suite, so one control inheriting another's residue
+    # is how a control quietly stops measuring its own scenario. (Measured: the
+    # first run of this helper inherited STUB_DIG=none from control 31, resolved
+    # nothing, and reported `000` for a hostname that answers.)
+    export STUB_MODE="$3" STUB_BODY="$4" STUB_DIG="${5:-public}"
+    : > "$STUB_COUNT"; : > "$STUB_RESOLVE"; : > "$DIG_COUNT"
+    walk_redirects "$2" || exit 9
+    login_surface "$(host_of_url "$2" 2>/dev/null)" "$WALK_CODE" "$WALK_FINAL" "$WALK_PIN"
+    printf 'rc=%s state=%s calls=%s' "$?" "${LOGIN_STATE:-}" "$(cat "$STUB_COUNT")"
+  ) 2>/dev/null
+}
+
+echo
+echo "--- #43: the host judged is the host fetched"
+
+# 34. DIRECTION ONE. calls=3 is the load-bearing part: two hops plus the body.
+#     The pre-fix code made two, never looked at the credential surface, and
+#     reported the hostname ok.
+v="$(verdict "$WORK/sut.bash" "https://www.example.com/" to_webmail m_webmail)"
+if [[ "$v" == "rc=0 state=finding calls=3" ]]; then
+  ok "a chain landing on an unapproved login host is fetched and reported ($v)"
+else
+  bad "a chain landing on an unapproved login host is fetched and reported" \
+      "got '$v', want 'rc=0 state=finding calls=3'"
+fi
+
+# 35. DIRECTION TWO. calls=2 is the whole walk and no body fetch. The pre-fix
+#     code made three: it matched the probe name, fetched the homepage, matched
+#     a login marker in it and reported a hostname serving an ordinary page.
+v="$(verdict "$WORK/sut.bash" "https://webmail.example.com/" to_www m_webmail)"
+if [[ "$v" == "rc=1 state=none calls=2" ]]; then
+  ok "a chain leaving a login host for a homepage is not judged by the starting name ($v)"
+else
+  bad "a chain leaving a login host for a homepage is not judged by the starting name" \
+      "got '$v', want 'rc=1 state=none calls=2'"
+fi
+
+
+# --- #42: the approved-login-host policy ---------------------------------------
+#
+# The policy's entire content is WHICH hostnames are approved, so the controls
+# below drive it from fixtures rather than from the (deliberately empty) estate
+# list: a control that read today's inventory would change meaning the day the
+# estate changes, which is how a suite stops measuring the code.
+
+echo
+echo "--- #42: the approved-login-host policy"
+
+printf 'login webmail.example.com\n' > "$WORK/approved.txt"
+printf 'login *.jewell.nexus\n'    > "$WORK/approved-pattern.txt"
+printf 'suffix jewell.nexus\n'     > "$WORK/approved-suffix.txt"
+
+# 36. The shipped policy file must exist, and the script must be the thing that
+#     names it. An approvals list at a path nobody reads is a policy that
+#     silently approves nothing: fail-safe, but invisible, and this file is
+#     documented as the place the decision lives.
+if [[ -f "$HERE/../approved-login-hosts.txt" ]] \
+   && grep -qF 'approved-login-hosts.txt' "$SUT"; then
+  ok "the shipped approvals file exists and the script names it"
+else
+  bad "the shipped approvals file exists and the script names it" \
+      "file or reference missing — approvals would silently apply to nothing"
+fi
+
+# 37. The loader reads the list it is given, and nothing else.
+APPROVED_LOGIN_HOSTS_FILE="$WORK/approved.txt"
+load_approved_login_hosts
+if [[ "${#APPROVED_LOGIN_HOSTS[@]}" == "1" \
+      && "${APPROVED_LOGIN_HOSTS[0]}" == "webmail.example.com" ]]; then
+  ok "loads exactly the approved hostname it was given"
+else
+  bad "loads exactly the approved hostname it was given" \
+      "got ${#APPROVED_LOGIN_HOSTS[@]}: ${APPROVED_LOGIN_HOSTS[*]:-<none>}"
+fi
+
+# 38. An approved host serving a login form is the SERVICE WORKING, not a
+#     finding. Without this, the policy is a file nobody reads.
+if ! run_login m_webmail "webmail.example.com" 200 "https://webmail.example.com/" \
+     && [[ "$LOGIN_STATE" == "expected" ]]; then
+  ok "an approved login host serving a login form is not a finding"
+else
+  bad "an approved login host serving a login form is not a finding" \
+      "state='${LOGIN_STATE:-}'"
+fi
+
+# 39. And the SAME page on an unapproved host IS a finding. Controls 38 and 39
+#     differ in nothing but the list, which is what makes them a pair: either one
+#     alone is satisfied by a function that always returns the same verdict. The
+#     path used here does not exist on purpose — an ABSENT approvals file must
+#     approve nothing, and that is asserted rather than assumed.
+APPROVED_LOGIN_HOSTS_FILE="$WORK/no-such-approved-login-hosts.txt"
+load_approved_login_hosts
+if run_login m_webmail "webmail.example.com" 200 "https://webmail.example.com/" \
+   && [[ "$LOGIN_STATE" == "finding" ]]; then
+  ok "the same login form on an unapproved host is a finding"
+else
+  bad "the same login form on an unapproved host is a finding" \
+      "state='${LOGIN_STATE:-}'"
+fi
+
+# 40. An approved host serving NO login form is not a finding, and says so. The
+#     decision is recorded in approved-login-hosts.txt: the list says a form here
+#     is legitimate, not that one must exist, so a webmail service rebooting or
+#     being retired does not red the daily check — the permanent-red failure the
+#     policy exists to prevent. It is still reported, annotated, so the state is
+#     visible.
+APPROVED_LOGIN_HOSTS_FILE="$WORK/approved.txt"
+load_approved_login_hosts
+if ! run_login benign "webmail.example.com" 200 "https://webmail.example.com/" \
+     && [[ "$LOGIN_STATE" == "absent" ]]; then
+  ok "an approved login host serving no login form is not a finding, and says so"
+else
+  bad "an approved login host serving no login form is not a finding" \
+      "state='${LOGIN_STATE:-}'"
+fi
+
+# 41. Approving a HOSTNAME is not approving a NAMESPACE. `login jewell.nexus`
+#     must not approve webmail.jewell.nexus: the subdomain is a different name,
+#     answered by a different vhost, and a specific name is what was hijacked at
+#     webmail.jewell.nexus. This is the #41 lesson applied before it can be
+#     relearned here.
+printf 'login jewell.nexus\n' > "$WORK/approved-apex.txt"
+APPROVED_LOGIN_HOSTS_FILE="$WORK/approved-apex.txt"
+load_approved_login_hosts
+if is_approved_login_host jewell.nexus && ! is_approved_login_host webmail.jewell.nexus; then
+  ok "an exact hostname approval does not approve the names under it"
+else
+  bad "an exact hostname approval does not approve the names under it" \
+      "apex approved=$([[ -n "${APPROVED_LOGIN_HOSTS[0]:-}" ]] && echo yes); subdomain approved too=$(is_approved_login_host webmail.jewell.nexus && echo yes || echo no)"
+fi
+
+# 42. A `suffix` line is NOT an approval, and must not become one by being read
+#     as "everything under this domain". It is ignored LOUDLY, so the list can
+#     only ever come out stricter than the operator intended — never broader.
+APPROVED_LOGIN_HOSTS_FILE="$WORK/approved-suffix.txt"
+load_approved_login_hosts 2>"$WORK/loader-suffix.err"
+if [[ "${#APPROVED_LOGIN_HOSTS[@]}" -eq 0 ]] \
+   && grep -q "unrecognised" "$WORK/loader-suffix.err"; then
+  ok "a suffix line approves nothing, and says so out loud"
+else
+  bad "a suffix line approves nothing, and says so out loud" \
+      "approved=${#APPROVED_LOGIN_HOSTS[@]} stderr='$(cat "$WORK/loader-suffix.err")'"
+fi
+
+# 43. A pattern is REFUSED, not guessed at. `login *.jewell.nexus` has two
+#     plausible readings — approve every host that matches, or approve nothing —
+#     and a policy that silently picks one is how a stranger's login surface gets
+#     pre-approved. Exit 2, and the message says which mistake it is.
+( APPROVED_LOGIN_HOSTS_FILE="$WORK/approved-pattern.txt" load_approved_login_hosts ) \
+  2>"$WORK/loader-pattern.err"
+rc=$?
+if [[ "$rc" -eq 2 ]] && grep -q "not a hostname" "$WORK/loader-pattern.err"; then
+  ok "a wildcard entry is refused with exit 2 rather than interpreted"
+else
+  bad "a wildcard entry is refused with exit 2 rather than interpreted" \
+      "rc=$rc stderr='$(cat "$WORK/loader-pattern.err")'"
+fi
+
+# 44. host_of_url is the one place the fetched host is named, so its parsing is
+#     asserted directly: the port is not part of a hostname, and a hostname is
+#     case-insensitive while the approvals list is written in lower case.
+for spec in "https://a.example.com/|a.example.com" \
+            "https://a.example.com:8443/x?y=1|a.example.com" \
+            "https://[2001:db8::1]:8443/|2001:db8::1" \
+            "https://user:pw@Webmail.Example.COM/|webmail.example.com"; do
+  url="${spec%%|*}"; want="${spec##*|}"
+  got="$(host_of_url "$url")" || got=""
+  if [[ "$got" == "$want" ]]; then
+    ok "host_of_url $url -> $want"
+  else
+    bad "host_of_url $url" "got '$got', want '$want'"
+  fi
+done
+if ! host_of_url "http://plain.example.com/" >/dev/null \
+   && ! host_of_url "https:///path" >/dev/null; then
+  ok "host_of_url refuses a non-https URL and a URL with no host"
+else
+  bad "host_of_url refuses a non-https URL and a URL with no host" \
+      "one of the two was accepted, so a host could be judged that was never walked"
+fi
+
+# 45. A hostname is case-insensitive and the approvals list is written in lower
+#     case, so the walk, the judgement and the pin must agree ACROSS case. A
+#     comparison that is case-sensitive in one place and not the other refuses to
+#     fetch a real credential surface whose Location header capitalised it — a
+#     false negative manufactured by the assertion meant to make the fetch safer.
+v="$(verdict "$WORK/sut.bash" "https://www.example.com/" to_webmail_mixed m_webmail)"
+if [[ "$v" == "rc=0 state=finding calls=3" ]]; then
+  ok "a mixed-case landing host is judged and fetched, not skipped ($v)"
+else
+  bad "a mixed-case landing host is judged and fetched, not skipped" \
+      "got '$v', want 'rc=0 state=finding calls=3'"
+fi
+
+# --- the fix is load-bearing: reverting it must kill these controls -----------
+#
+# A green suite is not evidence that a fix works — it is evidence that nothing
+# currently measured disagrees with it, and a control can pass for the wrong
+# reason. So the defect is put back, the same two scenarios are re-run against
+# it, and the kills are asserted by name, printing both verdicts so a failure
+# says which half moved.
+#
+# TWO mutants, because #43 has two halves and they are not equally visible:
+#
+#   A  the decision only — judge the PROBE host instead of the host of the URL
+#      about to be fetched. This is the defect the issue names.
+#   B  A, plus removal of the pin-belongs-to-this-host assertion. That is the
+#      pre-fix code verbatim: it had no pin assertion for the wrong host to hit.
+#
+# B exists because of a measurement, and the measurement is the interesting part.
+# Under A, the direction-two scenario is refused by the pin assertion BEFORE the
+# wrong host can be fetched, so it makes the same number of requests and returns
+# the same verdict as the shipped code — control 35 cannot see A at all. That is
+# not a hole in control 35: it is a second guard holding the same invariant, in
+# the same shape as the assertion at the end of resolve_public. But a kill that
+# comes from a DIFFERENT guard is not a kill of this control, so B removes that
+# guard as well and control 35 is asserted to die on the defect itself.
+
+echo
+echo "--- mutation control: put #43 back and watch the controls die"
+
+MUTANT_A="$WORK/mutant-decision.bash"
+MUTANT_B="$WORK/mutant-prefix.bash"
+sed 's#^  judged="\$(host_of_url "\$final")" || return 1$#  judged="$probe"#' \
+    "$WORK/sut.bash" > "$MUTANT_A"
+sed -e 's#^  judged="\$(host_of_url "\$final")" || return 1$#  judged="$probe"#' \
+    -e 's#^  \[\[ "${pin_host,,}" == "\$judged" \]\] || return 1$#  true#' \
+    "$WORK/sut.bash" > "$MUTANT_B"
+
+# An extraction or a sed that matched nothing would leave a file identical to the
+# shipped code, and every kill below would then be a claim about a mutant that
+# was never built — the absence-shaped failure this suite exists to catch. (A
+# mutation that did not apply has already happened here once, during this
+# change: the first version of the sed was anchored at the end of a line that
+# continues with `|| return 1`, matched nothing, and the suite said so.)
+assert_mutant() {
+  if cmp -s "$WORK/sut.bash" "$1"; then
+    bad "$2 differs from the shipped code" \
+        "the mutation did not apply, so the kills below would be vacuous"
+  elif ! bash -n "$1" 2>"$WORK/mutant.syntax"; then
+    bad "$2 differs from the shipped code" \
+        "does not parse: $(cat "$WORK/mutant.syntax")"
+  else
+    ok "$2 differs from the shipped code and parses"
+  fi
+}
+assert_mutant "$MUTANT_A" "mutant A (decision only)"
+assert_mutant "$MUTANT_B" "mutant B (decision + no pin assertion)"
+grep -q '^  judged="\$probe"$' "$MUTANT_A" \
+  || bad "mutant A contains the reverted line" "the probe host is not what it judges"
+grep -q '^  judged="\$probe"$' "$MUTANT_B" \
+  || bad "mutant B contains the reverted line" "the probe host is not what it judges"
+
+# The shipped code and each mutant are given the SAME scenario, in the same
+# subshell, through the same stub; only the sourced file differs.
+shipped_a="$(verdict "$WORK/sut.bash" "https://www.example.com/"     to_webmail m_webmail)"
+shipped_b="$(verdict "$WORK/sut.bash" "https://webmail.example.com/" to_www     m_webmail)"
+mutant_a="$(verdict "$MUTANT_A"     "https://www.example.com/"     to_webmail m_webmail)"
+mutant_b="$(verdict "$MUTANT_B"     "https://webmail.example.com/" to_www     m_webmail)"
+mutant_a_b="$(verdict "$MUTANT_A"   "https://webmail.example.com/" to_www     m_webmail)"
+
+# 46. Direction one. Mutant A decides on www., finds no login prefix, and never
+#     looks at webmail. — two requests, no finding. Control 34 goes red, and it
+#     goes red for the right reason: the credential surface was not fetched.
+if [[ "$shipped_a" == "rc=0 state=finding calls=3" && "$mutant_a" != "$shipped_a" ]]; then
+  ok "control 34 kills mutant A (shipped: $shipped_a; mutant: $mutant_a)"
+else
+  bad "control 34 kills mutant A" \
+      "shipped: '$shipped_a' mutant: '$mutant_a' — the control does not measure the fix"
+fi
+
+# 47. Direction two, against mutant B. The pre-fix code decides on webmail.,
+#     matches, fetches the homepage with the caller's pin — and reports a page it
+#     was not asked about. Control 35 goes red.
+if [[ "$shipped_b" == "rc=1 state=none calls=2" && "$mutant_b" != "$shipped_b" ]]; then
+  ok "control 35 kills mutant B (shipped: $shipped_b; mutant: $mutant_b)"
+else
+  bad "control 35 kills mutant B" \
+      "shipped: '$shipped_b' mutant: '$mutant_b' — the control does not measure the fix"
+fi
+
+# 48. And the reason mutant A is invisible to control 35 is asserted, not
+#     assumed: mutant A's direction-two verdict must EQUAL the shipped one, with
+#     no fetch either. If that ever stops being true, control 35 is measuring
+#     something different from what its comment claims.
+if [[ "$mutant_a_b" == "$shipped_b" ]]; then
+  ok "mutant A is masked on direction two by the pin assertion, as documented"
+else
+  bad "mutant A is masked on direction two by the pin assertion" \
+      "shipped: '$shipped_b' mutant A: '$mutant_a_b' — the comment is no longer true"
+fi
+
+# 49. Neither mutant may be killed for some OTHER reason. Both runs completed a
+#     redirect walk and reached the decision, so a red control 34/35 cannot be
+#     explained by the mutant crashing, refusing to walk, or dying before the
+#     decision. Stated separately because "the control failed" and "the control
+#     failed for the reason it claims" are different claims, and only the second
+#     is a kill.
+crashed=0
+for v in "$mutant_a" "$mutant_a_b" "$mutant_b"; do
+  [[ "$v" == rc=*" state="*" calls="* ]] || crashed=$((crashed + 1))
+done
+if [[ "$crashed" -eq 0 ]]; then
+  ok "every mutant run reached the login decision (no crash, no abort)"
+else
+  bad "every mutant run reached the login decision" \
+      "$crashed run(s) produced no verdict — a crash would fake a kill"
 fi
 
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"

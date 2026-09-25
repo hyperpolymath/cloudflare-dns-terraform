@@ -25,8 +25,16 @@
 # EXIT CODES
 #   0  every hostname stayed on an estate domain
 #   1  at least one hostname left the estate, or served a login form from a
-#      hostname that should not have one
+#      hostname that is not on the approved-login-hosts.txt list
 #   2  usage/preflight error
+#
+# FILES
+#   domains.csv                the estate's zones, one domain per line
+#   approved-login-hosts.txt   "login <hostname>" — a login form on this exact
+#                              hostname is expected, so it is the service
+#                              working rather than a finding. Exact hostnames
+#                              only: no suffixes, no patterns. Absent file =
+#                              nothing approved, which is the fail-safe default.
 
 set -uo pipefail
 
@@ -305,34 +313,191 @@ walk_redirects() {
 # here so the credential-free fallback catches it too when no token exists.
 LOGIN_PREFIXES="webmail cpanel webdisk whm"
 
-login_surface() {
-  local host="$1" code="$2" final="$3" pin="$4" prefix body
-  [[ "$code" == "200" ]] || return 1
-  for prefix in $LOGIN_PREFIXES; do
-    if [[ "$host" == "$prefix."* ]]; then
-      # Reuse the caller's pin rather than resolving $final again. An
-      # independent second resolution was the defect here: the address
-      # validated during the walk could be replaced by a private one before
-      # this fetch. With the pin there is no second resolution to poison.
-      # No pin means the caller never validated this URL, so refuse to fetch.
-      [[ -n "$pin" ]] || return 1
-      body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0 \
-                   --noproxy '*' --resolve "$pin" "$final" 2>/dev/null || true)"
-      # cPanel/Webmail login markers. Kept broad on purpose: a false positive
-      # costs one manual look, a false negative costs a mailbox.
-      if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
-           <<< "$body"; then
-        return 0
-      fi
-      return 1
-    fi
+# --- the approved-login-host policy ------------------------------------------
+#
+# A login form on a cPanel service name is a finding only if the service is not
+# SUPPOSED to be there, and login_surface cannot tell the two apart by itself.
+# Without a policy it reports every login form it finds, so the first legitimate
+# webmail host in this estate (33 reseller cPanel accounts, so: when, not if)
+# would turn the daily check permanently red — and a gate that is red every day
+# for a known-good reason is a gate nobody reads.
+#
+# The list is EXACT hostnames, one `login <hostname>` line each, in
+# approved-login-hosts.txt beside allowed-origins.txt. No suffixes and no
+# patterns, on purpose: a suffix on a shared platform approves anyone's host,
+# not ours — the defect recorded for the origin allow-list in #41.
+APPROVED_LOGIN_HOSTS_FILE="${APPROVED_LOGIN_HOSTS_FILE:-$REPO_ROOT/approved-login-hosts.txt}"
+APPROVED_LOGIN_HOSTS=()
+
+# load_approved_login_hosts — read APPROVED_LOGIN_HOSTS_FILE into the array.
+#
+# A MISSING file yields an empty list, which approves nothing. That is both the
+# fail-safe direction (an unapproved host is reported, never silently excused)
+# and the estate's measured state today: no webmail./cpanel./webdisk./whm.
+# hostname answers anywhere. It is deliberately NOT a preflight error: refusing
+# to run would delete the off-estate detector over a policy file, and a detector
+# that will not look is the failure this whole workflow exists to prevent.
+#
+# A MALFORMED entry is exit 2, because the readings of `login *.jewell.nexus`
+# are "approve every hostname that matches" and "approve nothing", and guessing
+# between them is how a policy becomes a hole. Shape-validated as a single
+# hostname, so a wildcard, a suffix and a bare kind word all fail loudly here
+# instead of silently never matching the hostname they were meant to approve.
+load_approved_login_hosts() {
+  APPROVED_LOGIN_HOSTS=()
+  [[ -f "$APPROVED_LOGIN_HOSTS_FILE" ]] || return 0
+  local line kind val
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(echo "$line" | xargs 2>/dev/null || true)"
+    [[ -z "$line" ]] && continue
+    kind="${line%% *}"
+    val="${line#* }"
+    case "$kind" in
+      login)
+        val="${val,,}"
+        if [[ ! "$val" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+          echo "error: $APPROVED_LOGIN_HOSTS_FILE: '$val' is not a hostname." >&2
+          echo "hint:  approval is per EXACT hostname, one line per service, e.g." >&2
+          echo "         login webmail.jewell.nexus" >&2
+          echo "       A wildcard ('login *.jewell.nexus') would approve every host" >&2
+          echo "       that matches it, including a stranger's — the multi-tenant" >&2
+          echo "       mistake this list must not repeat. Refusing rather than" >&2
+          echo "       guessing which reading was meant." >&2
+          exit 2
+        fi
+        APPROVED_LOGIN_HOSTS+=("$val") ;;
+      *)
+        echo "warn: ignoring unrecognised approved-login-hosts.txt line: $line" >&2 ;;
+    esac
+  done < "$APPROVED_LOGIN_HOSTS_FILE"
+}
+
+# is_approved_login_host HOST -> 0 when a login form on HOST is expected.
+# Exact match on the whole hostname; approving `jewell.nexus` approves the apex
+# and nothing under it.
+is_approved_login_host() {
+  local host="${1,,}" entry
+  for entry in "${APPROVED_LOGIN_HOSTS[@]+"${APPROVED_LOGIN_HOSTS[@]}"}"; do
+    [[ "$host" == "$entry" ]] && return 0
   done
   return 1
 }
 
+# host_of_url URL -> prints the host (no port), lowercased; returns 1 if there
+# is none. THIN WRAPPER ON PURPOSE: it goes through url_host_port, the same
+# parser the walk used to build the pin, so the host that is JUDGED and the host
+# that is FETCHED are the same string from the same parser reading the same URL.
+# Two parsers — or two URLs — is the #43 defect: the prefix test read the probe
+# host while the body fetch read the final URL, so after a redirect this
+# function declined to look at the credential surface it had just walked into,
+# and would have body-checked a project homepage it was never asked about.
+#
+# The https check is an ASSERTION OF THE CONTRACT, not a defence: url_host_port
+# already yields no host at all for a non-https URL (its port field ends up
+# non-numeric), so removing this line kills no control — measured, mutant M8.
+# It is here so that a future caller which hands over a URL the walk never
+# validated gets a refusal rather than a hostname, and it is labelled as that
+# rather than as a guard, because a comment claiming a property the code does
+# not establish is this estate's most-repeated defect.
+host_of_url() {
+  local url="$1"
+  [[ "$url" == https://* ]] || return 1
+  url_host_port "$url" || return 1
+  printf '%s' "${URL_HOST,,}"
+}
+
+# login_surface PROBE_HOST CODE FINAL_URL PIN -> 0 means FINDING.
+#
+#   PROBE_HOST  the hostname the sweep started from. Used ONLY to describe a
+#               finding in which the chain moved host; never to decide one.
+#   CODE        the status of the last hop.
+#   FINAL_URL   where the chain landed. The host judged is this URL's host,
+#               because the question is "what is served where the visitor
+#               lands?" — and because that is the host about to be fetched.
+#   PIN         the --resolve pin the walk built for FINAL_URL. Without one
+#               this function refuses to fetch at all.
+#
+# Sets LOGIN_STATE for the caller's report:
+#   finding   a login form on a host nobody approved — the actual signal
+#   expected  an approved login host serving a login form — the service working
+#   absent    an approved login host serving no login form — not a finding
+#   none      nothing to report
+#
+# The old version walked the chain a second time and clobbered the caller's
+# WALK_* globals; this one fetches the caller's already-validated URL exactly
+# once, through the caller's pin.
+login_surface() {
+  local probe="$1" code="$2" final="$3" pin="$4"
+  local judged="" matched="" prefix body="" pin_host=""
+  LOGIN_STATE="none"; LOGIN_NOTE=""
+  [[ "$code" == "200" ]] || return 1
+
+  # ONE HOST, READ ONCE. This is the whole of #43: the guard and its consumer
+  # must ask their question about the same value, and this is that value — the
+  # host of the URL the caller walked and validated, which is the URL about to
+  # be fetched.
+  judged="$(host_of_url "$final")" || return 1
+
+  # The body is fetched only for a cPanel service NAME — still gated on the
+  # name, but on the name that is about to be fetched.
+  for prefix in $LOGIN_PREFIXES; do
+    if [[ "$judged" == "$prefix."* ]]; then matched="$prefix"; break; fi
+  done
+  [[ -n "$matched" ]] || return 1
+
+  # Reuse the caller's pin rather than resolving $final again. An independent
+  # second resolution was the defect here: the address validated during the
+  # walk could be replaced by a private one before this fetch. With the pin
+  # there is no second resolution to poison — and it has to belong to the URL
+  # being fetched, or the fetch would go out through a pin that validated a
+  # different address.
+  [[ -n "$pin" ]] || return 1
+  # Case-insensitively: the walk builds the pin from the URL it was handed, and a
+  # Location header may spell the host in any case, while hostnames are
+  # case-insensitive and this function compares lower-cased ones. Comparing
+  # byte-for-byte here would refuse to fetch a real credential surface whose
+  # redirect happened to capitalise it — a false negative produced by the
+  # assertion meant to make the fetch safer, which is why control 45 exists.
+  pin_host="${pin%%:*}"
+  [[ "${pin_host,,}" == "$judged" ]] || return 1
+
+  body="$(curl -sS --max-time "$TIMEOUT" --proto '=https' --max-redirs 0 \
+               --noproxy '*' --resolve "$pin" "$final" 2>/dev/null || true)"
+
+  # cPanel/Webmail login markers. Kept broad on purpose: a false positive
+  # costs one manual look, a false negative costs a mailbox.
+  if grep -qiE 'webmail login|cpanel login|name="?pass(word)?"?|id="?login_password' \
+       <<< "$body"; then
+    if is_approved_login_host "$judged"; then
+      LOGIN_STATE="expected"
+      return 1                       # an approved service working is not a finding
+    fi
+    LOGIN_STATE="finding"
+    if [[ "$probe" != "$judged" ]]; then
+      LOGIN_NOTE="at $judged, reached by redirect; not an approved login host"
+    else
+      LOGIN_NOTE="not an approved login host"
+    fi
+    return 0
+  fi
+
+  # A login-prefixed name serving no login form is not a finding whether or not
+  # it is approved. See approved-login-hosts.txt: the list says a form here is
+  # legitimate, not that one must exist.
+  if is_approved_login_host "$judged"; then LOGIN_STATE="absent"; fi
+  return 1
+}
+
+load_approved_login_hosts
+login_hosts_note=""
+[[ -f "$APPROVED_LOGIN_HOSTS_FILE" ]] \
+  || login_hosts_note=" ($APPROVED_LOGIN_HOSTS_FILE absent — nothing is pre-approved)"
+
 FINDINGS=0
 echo "== edge redirect check — $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
 echo "hostnames: ${#HOSTS[@]}"
+echo "approved login hosts: ${#APPROVED_LOGIN_HOSTS[@]}$login_hosts_note"
 echo
 
 for h in "${HOSTS[@]}"; do
@@ -364,8 +529,12 @@ for h in "${HOSTS[@]}"; do
 
   if on_estate "$final"; then
     if login_surface "$h" "$code" "$final" "$pin"; then
-      printf '  %-34s %s LOGIN FORM served here\n' "$h" "$code"
+      printf '  %-34s %s LOGIN FORM served here — %s\n' "$h" "$code" "$LOGIN_NOTE"
       FINDINGS=$((FINDINGS + 1))
+    elif [[ "$LOGIN_STATE" == "expected" ]]; then
+      printf '  %-34s %s ok (approved login host — login form served, as expected)\n' "$h" "$code"
+    elif [[ "$LOGIN_STATE" == "absent" ]]; then
+      printf '  %-34s %s ok (approved login host — no login form served today)\n' "$h" "$code"
     else
       printf '  %-34s %s ok\n' "$h" "$code"
     fi
@@ -385,9 +554,11 @@ if [[ "$FINDINGS" -gt 0 ]]; then
   echo "DNS UNRESOLVABLE = every resolver errored, so this hostname was NOT CHECKED."
   echo "                 It is reported rather than passed over, because an"
   echo "                 unanswered question is not a clean answer."
-  echo "LOGIN FORM     = that hostname serves a password field; if its origin is a"
-  echo "                 server we have left, the password goes to a stranger. Worse"
-  echo "                 than a redirect, so fix it first."
+  echo "LOGIN FORM     = that hostname serves a password field and is NOT on the"
+  echo "                 approved-login-hosts.txt list. If its origin is a server we"
+  echo "                 have left, the password goes to a stranger. Worse than a"
+  echo "                 redirect, so fix it first — or add the hostname to that list,"
+  echo "                 explicitly, if a login form there is intended."
   echo "Check the Cloudflare DNS Content column for those names: a proxied record"
   echo "hides its origin, so the public A record will look innocent."
   exit 1

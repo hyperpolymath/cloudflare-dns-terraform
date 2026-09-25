@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+#
+# approved-login-hosts.txt — the hostnames where a cPanel login form is EXPECTED.
+# Consumed by scripts/edge-redirect-check.sh, beside allowed-origins.txt.
+#
+# WHY: webmail.jewell.nexus served a credential-capture login form from a server
+# the family no longer rented. login_surface() catches that shape — but by
+# itself it cannot tell a hijacked name from a service doing its job, so with no
+# policy it reports every login form it ever finds. This estate has 33 reseller
+# cPanel accounts, so a legitimate webmail./cpanel. name is a *when*, not an
+# *if*; the day one appears, an unpoliced check is red every day for a
+# known-good reason, and a gate that is red every day for a good reason is a gate
+# nobody reads. That is how the September incident survived six months.
+#
+# So:
+#   login form on an APPROVED host   -> not a finding. The service is working.
+#   login form on an UNAPPROVED host -> FINDING. This is the signal: a login
+#                                       surface on a name nobody meant to be
+#                                       serving one is exactly what
+#                                       webmail.jewell.nexus was.
+#   an APPROVED host serving NO login form -> not a finding either. Decided
+#                                       deliberately rather than defaulted: this
+#                                       file says "a form here is legitimate",
+#                                       not "a form here must exist". Making
+#                                       absence a finding would red the daily
+#                                       check whenever a webmail service is
+#                                       rebooting, moving or retired — the same
+#                                       permanent-red failure it exists to
+#                                       prevent. The run still prints the
+#                                       hostname, annotated, so the state is
+#                                       visible without being noisy.
+#
+# FORMAT (one per line)
+#   login <hostname>    a login form on this EXACT hostname is expected
+#   blank lines and # comments ignored
+#
+# EXACT HOSTNAMES ONLY. No suffixes and no wildcards: `login jewell.nexus`
+# approves the apex, and nothing under it. A pattern is refused outright (exit
+# 2) rather than interpreted, because "approve every hostname that matches" and
+# "approve nothing" are both plausible readings, and guessing between them is
+# how a policy becomes a hole. This is the same defect as a multi-tenant suffix
+# on the origin allow-list — `suffix pages.dev` approves anyone's Pages site,
+# not ours (issue #41) — and it is refused here on purpose.
+#
+# TO APPROVE A SERVICE, add its hostname — the name a visitor types, not the
+# origin it resolves to:
+#
+#   login webmail.jewell.nexus
+#
+# One line per service. Do NOT add a domain's worth of names "just in case": an
+# approved name is a name whose login form this check will no longer report, and
+# that is precisely the guarantee the estate lost in September.
+#
+# EMPTY TODAY, ON PURPOSE. Measured 2026-09-15: no webmail./cpanel./webdisk./whm.
+# hostname answers anywhere in the estate, so there is nothing to approve — and
+# approving an unverified name would pre-excuse a credential surface nobody has
+# looked at. An empty list is the fail-safe direction: every login form found is
+# reported until someone says, explicitly, that it belongs there.
