@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= Detector issue sweep — plan for #41, #42, #43
+:toc:
+
+== What this is
+
+Three issues were filed against the two credential-free / read-only detectors
+when the daily audit landed (PR #40), deliberately *not* fixed there so the
+detector could start running. This is the plan for clearing them: the decisions
+each needs, the order they can be taken in, and what has to exist before the
+remaining one can honestly be called done.
+
+It is written down because two of the three are *dormant* — no hostname in the
+estate currently exercises the code — and dormant defects are exactly the ones
+that get "fixed" by reading the diff. Every claim below is either a control in
+`+scripts/test-edge-redirect-check.sh+`, a mutant killed by one, or explicitly
+marked as unmeasured.
+
+== The rule being applied
+
+The owner's standing rule, from PR #40: **dormant means an issue with acceptance
+criteria; live-on-merge means fix it now.** All three are dormant as measured on
+2026-09-15:
+
+* no `+webmail.+` / `+cpanel.+` / `+webdisk.+` / `+whm.+` hostname answers
+  anywhere in the estate — measured, 138 hostnames, `+RESULT: clean+` — so
+  `+login_surface+` never runs on a real sweep;
+* no estate hostname redirects at all, so the probe-host/final-URL disagreement
+  has nothing to disagree about yet.
+
+Dormant is not the same as harmless. Each one becomes live on an event this
+estate is *expecting*: 33 reseller cPanel accounts being migrated (a legitimate
+login surface appears), a hostname redirecting, or a site being moved onto Pages
+or Workers. The rule exists so that the fixing happens before the event rather
+than during it.
+
+The recurring shape behind all three: **a guard that asks a different question
+than its consumer.** #43 is that shape inside one function; #42 is that shape
+between a detector and a policy that did not exist; #41 is that shape between an
+allow-list and the ownership question the audit is supposed to answer.
+
+== The queue and its decisions
+
+=== #43 — `+login_surface+` judges one host and fetches another
+
+**Decision taken: the host judged is the host of the final URL.**
+
+The alternative — judge the probe host — was rejected because the check exists to
+answer "what is served where the visitor lands?", which is also the URL that is
+about to be fetched. Judging the probe host would mean never fetching a
+credential surface reached by redirect (the direction that matters) and
+body-checking a project homepage the check was never asked about (the direction
+that generates noise).
+
+Done, with `+host_of_url()+` as the single place the fetched host is named: the
+prefix test and the body fetch now read the same string from the same parser
+reading the same URL. Two controls cover the two directions, one mutant reverts
+the decision and is asserted to die on both, and the kill prints both verdicts so
+a red says which half moved.
+
+=== #42 — an approved-login-host policy
+
+**Decision taken: an exact-hostname approvals list, empty by default, and
+absence of a login form is not a finding.**
+
+* A login form on an **approved** host is not a finding: the service is working.
+* A login form on an **unapproved** host is a finding. That is the signal — a
+  login surface on a name nobody meant to be serving one is precisely what
+  `+webmail.jewell.nexus+` was.
+* An approved host serving **no** login form is **not** a finding either. The
+  issue asks for this one to be decided rather than defaulted, so: the list says
+  a form here is *legitimate*, not that one must *exist*. Making absence a
+  finding would red the daily check whenever a webmail service is rebooting,
+  moving or retired — the permanent-red failure the policy exists to prevent.
+  The run still prints the hostname, annotated, so the state is visible.
+
+The list is `+approved-login-hosts.txt+`, exact hostnames only, one
+`+login <hostname>+` line per service. A suffix or a wildcard is **refused with
+exit 2 rather than interpreted**, because "approve every host that matches" and
+"approve nothing" are both plausible readings and guessing between them is how a
+policy becomes a hole. A `+suffix+` line copied over from `+allowed-origins.txt+`
+is ignored *loudly* and approves nothing, so the list can only ever come out
+stricter than the operator intended.
+
+It ships **empty**, which is not an oversight: nothing answers on a cPanel
+service name today, and approving an unverified name would pre-excuse exactly
+the credential surface this check exists to find. An empty list is also what
+keeps the change inert on the current estate.
+
+=== #41 — a multi-tenant suffix proves no ownership
+
+**Decision: not fixed in the same change. Deferred deliberately, with the
+interim design and the missing input named.**
+
+The acceptance criterion is easy to state: no bare multi-tenant suffix
+(`+github.io+`, `+pages.dev+`, `+workers.dev+`) in `+allowed-origins.txt+`, and a
+fixture aimed at `+not-ours.pages.dev+` produces a finding while a real estate
+target does not. The blocker is that the replacement is **data**:
+
+* `+pages.dev+` is the hard one. Project names are globally unique but carry no
+  ownership marker — `+ours.pages.dev+` and `+anyone-elses.pages.dev+` are the
+  same shape — so the only correct entries are the exact project hostnames, and
+  those have to come from the Pages project inventory.
+* `+workers.dev+` narrows to **one datum**: the account's own workers.dev
+  subdomain makes `+suffix <account>.workers.dev+` ownership-bound, because only
+  that account can serve names under it. That subdomain is not recorded in this
+  repository.
+* `+github.io+` narrows to an org-namespaced suffix — `+suffix
+  hyperpolymath.github.io+` — which is ownership-bound by the namespace itself.
+
+So the interim shape is: replace the three shared suffixes with the org-scoped
+GitHub suffix, the account-scoped Workers suffix, and one `+host <project>.pages.dev+`
+line per Pages project — at which point any target not on the list becomes a
+loud finding with the exact line needed to fix it. That is the "converts a silent
+acceptance into a loud, obvious failure" option the issue describes, and it is
+safe to take the moment those two data items exist.
+
+Why it is not taken blind: this is the one of the three whose failure direction
+is *noise on a live estate*. Shipping it without the inventory would report
+legitimate Pages and Workers targets as findings, and an audit that is red for a
+known-good reason every day stops being read — which is the failure #42 exists to
+prevent and the failure that let the September incident run for six months.
+
+Sequence: `+dns-origin-audit+` already reports every A record until
+`+ALLOWED_ORIGIN_IPS+` is populated (documented in `+allowed-origins.txt+`), so
+the origins gate is red today for an unrelated, already-tracked reason. #41 is
+best taken *with* that population, as one pass over the zone list, rather than as
+a second, earlier reason for the same gate to be red.
+
+== Order of work
+
+. **#43 + #42, one change** (this branch). They rewrite the same decision — the
+  issue for #43 says so explicitly — and doing them apart would mean writing the
+  policy against a function that is about to change which host it is about.
+. **#41, with the inventory.** Blocked on two data items, not on design.
+3. Estate equivalence after #1: the `+edge+` job runs the real 138-hostname
+   sweep on every push to these paths and daily; it is green today and the change
+   is inert unless a login-prefixed hostname answers or a chain lands on one.
+
+== How each claim is proven
+
+Measured on this branch (`+scripts/test-edge-redirect-check.sh+`, 113 controls,
+was 90):
+
+[cols="1,3",options="header"]
+|===
+|Claim |Evidence
+|the two hosts agree |controls 34/35: chain into a login name is fetched and
+reported (`+calls=3+`); chain out of one is not judged by the starting name
+(`+calls=2+`, no body fetch)
+|the fix is load-bearing |one-line reversion of the decision killed by both
+controls, asserted by name, with both verdicts printed; the mutant is asserted
+to differ from the shipped file and to parse, so the kill cannot be vacuous
+|the policy bites |controls 38/39 are the same page with and without an
+approval — they differ in nothing else, so neither can pass for the wrong reason
+|the policy is not a hole |exact-host approval does not cover subdomains (41);
+a `+suffix+` line approves nothing and says so (42); a wildcard is refused with
+exit 2 (43); an absent file approves nothing (39)
+|the body fetch cannot be misdirected |control 33: a pin belonging to another
+host is refused rather than used
+|the host comparison is not case-broken |control 45: a Location header that
+capitalises the landing host is still fetched and judged — a case-sensitive
+comparison anywhere in the chain silently turns a real finding into `+ok+`
+|the detector still detects |the whole sweep, hermetically replayed through the
+real script with a scripted curl and dig: 138 hostnames, unchanged row shape,
+`+approved login hosts: 0+`
+|===
+
+Two reversions ship *in the suite itself*, with their kills asserted by name:
+the decision alone (mutant A), and the decision plus the removed pin assertion,
+which is the pre-fix code verbatim (mutant B). Ten further mutants were run by
+hand against the policy, pin and prefix paths. Nine died, each at exactly the
+control written for it: suffix-approval, absence-as-finding, approvals ignored,
+pattern accepted, missing pin, pin/host mismatch, missing loader validation,
+absent-file-approves-everything, emptied prefix list. The tenth is the first
+entry under *Two results* below.
+
+Two results are recorded as something other than a clean kill, and both are in
+the suite rather than in this paragraph:
+
+* Mutant A is *invisible* to the direction-two control, because the
+  pin-belongs-to-this-host assertion refuses the fetch before the wrong host can
+  be reached. That is a second guard holding the same invariant, not a hole — and
+  it is asserted (control 48), so the day it stops being true the suite says so
+  rather than leaving a comment that has quietly become false.
+* Removing `+host_of_url+`'s https check kills nothing, because
+  `+url_host_port+` already refuses those URLs. The line is documented as a
+  contract assertion rather than as a defence, so no reader is told it guards
+  something it does not.
+
+**Not measured here:** the live 138-hostname sweep. This environment has no
+network and no Cloudflare credential, so equivalence is argued from the
+hermetic replay plus the fact that the change is inert unless a login-prefixed
+hostname answers or a chain lands on one. The live answer is the `+edge+` job,
+which runs on merge and daily — and it is the job whose colour would change if
+this analysis is wrong.
+
+== What would reopen this
+
+* A hostname in the estate that legitimately serves a cPanel login form: add it
+  to `+approved-login-hosts.txt+`, one line, and the daily check stays quiet.
+* A legitimate Pages or Workers target appearing in a zone: that is #41's
+  inventory, and it is the point at which the interim conversion becomes both
+  safe and necessary.
+* Any estate hostname answering under a `+webmail.+` / `+cpanel.+` name that is
+  not on the approvals list: that is the check working, and the finding is the
+  conversation.
+
+== CI note: an unsigned HEAD commit, and the estate class behind it
+
+The first push of this change (`52f6117`) was unsigned, and this repository's
+`Base` ruleset carries `required_signatures`. Per
+`hyperpolymath/standards#1019`, an **unsigned HEAD commit makes GitHub reject
+every workflow at startup** — `startup_failure`, zero jobs created — so
+`gh pr checks` reads as "nothing red" rather than as an error. Measured on that
+head with the probe from the same issue: 5 of 5 `github-actions` check suites
+`startup_failure`, and `git log -1 --format=%G?` answering `N`.
+
+Only the HEAD commit is checked, so the cure is a signed commit at the tip
+rather than a rewrite, and commits created through the GitHub API are signed by
+GitHub (`verification.verified=true`). The branch was therefore rebuilt as a
+single such commit.
+
+Two things worth keeping from this. First, the failure is invisible in exactly
+the way this estate keeps paying for: no job, no check run, no red X — a dark
+gate and a green one look the same from the outside. Second, a detector that
+only ever runs in CI is not evidence about itself; the suites in this change are
+hermetic so that they *can* be run anywhere, which is why this class cost
+investigation time rather than verification time.

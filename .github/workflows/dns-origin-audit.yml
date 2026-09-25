@@ -32,6 +32,11 @@ on:
   push:
     paths:
       - 'allowed-origins.txt'
+      # A change to the approvals list changes what the sweep reports, so it has
+      # to re-run the sweep. Without this the file is edited, the daily job is
+      # green, and nobody learns that the edit either excused a credential
+      # surface or started reporting a legitimate service.
+      - 'approved-login-hosts.txt'
       - 'scripts/dns-origin-audit.sh'
       - 'scripts/edge-redirect-check.sh'
       - 'scripts/test-dns-origin-audit.sh'
