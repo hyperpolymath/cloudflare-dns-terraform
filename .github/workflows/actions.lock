@@ -5,7 +5,7 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/auto-detect-new-domains.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1'
+        - 'peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8'
     '.github/workflows/boj-build.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/casket-pages.yml':
@@ -93,9 +93,9 @@ dependencies:
         commit: 'sha1-e384daf6167a7a7567642d6a62060106244d2413'
         owner_id: 6759885
         repo_id: 1352485172
-    'peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1':
-        ref: 'v8.1.1'
-        commit: 'sha1-5f6978faf089d4d20b00c7766989d076bb2fc7f1'
+    'peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8':
+        ref: 'v8.1.2'
+        commit: 'sha1-15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8'
         owner_id: 18365890
         repo_id: 197176365
     'peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697':
